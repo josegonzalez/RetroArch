@@ -781,7 +781,7 @@ extern menu_ctx_driver_t menu_ctx_ozone;
 extern menu_ctx_driver_t menu_ctx_rgui;
 extern menu_ctx_driver_t menu_ctx_mui;
 extern menu_ctx_driver_t menu_ctx_xmb;
-extern menu_ctx_driver_t menu_ctx_cannoli;
+extern menu_ctx_driver_t menu_ctx_streamlined;
 
 RETRO_END_DECLS
 
