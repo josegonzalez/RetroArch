@@ -3565,6 +3565,26 @@ MSG_HASH(
    MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SYSTEM_STR
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_ROMS,
+   "cloud_sync_sync_roms"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_SYNC_MODE,
+   "cloud_sync_roms_sync_mode"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_SYNC_NOW,
+   "cloud_sync_roms_sync_now"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL,
+   "cloud_sync_roms_resolve_keep_local"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER,
+   "cloud_sync_roms_resolve_keep_server"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_CLOUD_SYNC_DRIVER,
    MENU_ENUM_LABEL_CLOUD_SYNC_DRIVER_STR
    )
