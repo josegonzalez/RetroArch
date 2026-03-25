@@ -84,6 +84,7 @@ When you have a game highlighted — in a folder, History, Favorites, a playlist
 - **Start Without Resume** - Starts the game fresh without loading your saved progress
 - **Random Game** - Opens a preview of a randomly picked game from the current list. You will see the game's name and artwork. Press **A** to play, **X** to resume from where you left off (if you have saved progress), or **B** to go back. This option only appears when there are at least two games in the list. If the folder does not have a core set up yet, you will be asked to pick one before the game starts.
 - **Remove from History** - Removes the game from your play history. You will be asked to confirm before it is removed. This option only appears when you are browsing History or the Game Switcher.
+- **Remove from Favorites** - Removes the game from your favorites. You will be asked to confirm before it is removed. This option only appears when you are browsing Favorites.
 
 Press **B** to close the Options menu and go back to what you were doing before.
 

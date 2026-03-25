@@ -562,7 +562,7 @@ static void streamlined_populate_game_list_options(streamlined_t *strm);
 static void streamlined_glo_launch_without_resume(streamlined_t *strm);
 static void streamlined_glo_random_game(streamlined_t *strm);
 static void streamlined_populate_random_preview(streamlined_t *strm);
-static void streamlined_glo_remove_from_history(streamlined_t *strm);
+static void streamlined_glo_confirm_remove(streamlined_t *strm);
 static void streamlined_populate_confirm_remove(streamlined_t *strm);
 static void streamlined_populate_core_selection(
       streamlined_t *strm, const char *content_path);
@@ -2616,9 +2616,10 @@ static void streamlined_glo_launch_without_resume(streamlined_t *strm)
 }
 
 /*
- * GLO action: push confirmation view before removing from history.
+ * GLO action: push confirmation view before removing an item.
+ * Works for both history and favorites — source_type distinguishes them.
  */
-static void streamlined_glo_remove_from_history(streamlined_t *strm)
+static void streamlined_glo_confirm_remove(streamlined_t *strm)
 {
    streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
    streamlined_view_t *confirm;
@@ -3191,7 +3192,11 @@ static void streamlined_render_menu(streamlined_t *strm,
          strlcpy(title_buf, "Options", sizeof(title_buf));
          break;
       case STREAMLINED_VIEW_CONFIRM_REMOVE:
-         strlcpy(title_buf, "Remove from History?", sizeof(title_buf));
+         if (view->data.confirm_remove.source_type
+               == STREAMLINED_VIEW_FAVORITES)
+            strlcpy(title_buf, "Remove from Favorites?", sizeof(title_buf));
+         else
+            strlcpy(title_buf, "Remove from History?", sizeof(title_buf));
          break;
       case STREAMLINED_VIEW_RANDOM_PREVIEW:
          /* Random preview draws its own full-screen UI */
@@ -4927,6 +4932,21 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
          menu_entries_append(list,
                "Remove from History",
                "glo_remove_from_history",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
+   /* "Remove from Favorites" — available when source is FAVORITES */
+   if (view)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_FAVORITES)
+      {
+         menu_entries_append(list,
+               "Remove from Favorites",
+               "glo_remove_from_favorites",
                MSG_UNKNOWN,
                FILE_TYPE_NONE,
                0, 0, NULL);
@@ -6865,7 +6885,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_glo_random_game(strm);
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_history"))
-               streamlined_glo_remove_from_history(strm);
+               streamlined_glo_confirm_remove(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_remove_from_favorites"))
+               streamlined_glo_confirm_remove(strm);
 
             return 0;
          }
@@ -6933,18 +6956,25 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                size_t idx = view->data.confirm_remove.history_idx;
                streamlined_view_type_t source =
                      view->data.confirm_remove.source_type;
+               playlist_t *pl = NULL;
                size_t count;
 
-               if (!g_defaults.content_history)
+               /* Resolve playlist from source type */
+               if (source == STREAMLINED_VIEW_FAVORITES)
+                  pl = g_defaults.content_favorites;
+               else
+                  pl = g_defaults.content_history;
+
+               if (!pl)
                   return 0;
 
-               count = playlist_size(g_defaults.content_history);
+               count = playlist_size(pl);
                if (idx >= count)
                   return 0;
 
                /* Remove entry and persist */
-               playlist_delete_index(g_defaults.content_history, idx);
-               playlist_write_file(g_defaults.content_history);
+               playlist_delete_index(pl, idx);
+               playlist_write_file(pl);
                count--;
 
                /* Pop confirm view, then pop GLO view */
@@ -6993,6 +7023,32 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   {
                      streamlined_populate_playlist_view(strm,
                            g_defaults.content_history, "No history");
+                     if (idx >= count)
+                        idx = count - 1;
+                     menu_st->selection_ptr = idx;
+                  }
+               }
+               else if (source == STREAMLINED_VIEW_FAVORITES
+                     && view
+                     && view->type == STREAMLINED_VIEW_FAVORITES)
+               {
+                  if (count == 0)
+                  {
+                     streamlined_view_pop(&strm->view_stack);
+                     view = streamlined_view_current(&strm->view_stack);
+                     if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+                     {
+                        streamlined_pop_nav_marker();
+                        streamlined_populate_folder_menu(strm,
+                              view->data.main_menu.folder_path, false);
+                     }
+                     if (view)
+                        menu_st->selection_ptr = view->saved_selection;
+                  }
+                  else
+                  {
+                     streamlined_populate_playlist_view(strm,
+                           g_defaults.content_favorites, "No favorites");
                      if (idx >= count)
                         idx = count - 1;
                      menu_st->selection_ptr = idx;
