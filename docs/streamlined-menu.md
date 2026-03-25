@@ -63,6 +63,18 @@ Highlight a game and press **A** to start it.
 
 If a game has saved progress from a previous session (an auto save), you will see **X Resume** at the bottom of the screen. Pressing **X** will start the game and pick up right where you left off. If you have auto-load savestates turned on in RetroArch's settings, pressing **A** will also resume automatically. If auto-load is turned off, you will see both **X Resume** and **A Play** — press **X** to resume or **A** to start fresh.
 
+## Game Switcher
+
+You can quickly switch between recently played games without going back to the main screen. Press **Select** from any screen to open the Game Switcher.
+
+The Game Switcher shows a big screenshot from the last auto-save for each game in your play history. If a game does not have an auto-save screenshot, it shows the game's artwork instead. Use **Left** and **Right** (or **L** and **R**) to flip through your recent games. The list wraps around — when you reach the end, it goes back to the beginning.
+
+Press **A** to jump into the selected game and pick up right where you left off from the auto-save. Press **X** to remove the selected game from the Game Switcher list (the save file is kept). Press **B** to close the Game Switcher and go back to what you were doing before.
+
+If you are already playing a game and auto-save is turned on in settings, your current progress is saved automatically before switching.
+
+The Game Switcher only appears if you have played at least one game (your play history is not empty).
+
 ## The Quick Menu (Pause Menu)
 
 While playing a game, open the menu to see the Quick Menu. The title at the top shows the name of the game you are playing. You will see these options:
@@ -135,7 +147,8 @@ Here is a quick summary of the controls:
 | **A / OK** | Select the highlighted item (shows "Play" when a game is highlighted) |
 | **X / Resume** | Resume a game from where you left off (when available) |
 | **B / Back** | Go back to the previous screen |
-| **Left / Right** | Switch save slots (when on Save or Load) |
+| **Left / Right** | Switch save slots (when on Save or Load), navigate the Game Switcher |
+| **Select** | Open the Game Switcher (when you have play history) |
 
 At the bottom of every screen, you will see a reminder showing **B** for Back on the left and **A** for OK (or "Play" when a game is highlighted) on the right.
 

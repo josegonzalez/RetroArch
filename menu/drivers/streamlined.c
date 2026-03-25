@@ -133,6 +133,7 @@ static uint32_t streamlined_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packe
 
 /* Save slot thumbnail/polaroid frame constants (base sizes before scaling) */
 #define STREAMLINED_THUMB_HEIGHT_RATIO 0.45f   /* Thumbnail height as ratio of screen height */
+#define STREAMLINED_SWITCHER_THUMB_HEIGHT_RATIO 0.65f /* Game switcher thumbnail height ratio */
 #define STREAMLINED_THUMB_ASPECT_RATIO (4.0f / 3.0f) /* Thumbnail aspect ratio */
 #define STREAMLINED_FRAME_BORDER_BASE  5       /* Frame side/top border in base pixels */
 #define STREAMLINED_FRAME_CHIN_BASE    28      /* Frame bottom chin in base pixels */
@@ -259,7 +260,8 @@ typedef enum
    STREAMLINED_VIEW_MAIN_SETTINGS,  /* Main menu Settings submenu */
    STREAMLINED_VIEW_RA_SETTINGS,    /* Delegated to RA generic handler */
    STREAMLINED_VIEW_PLAYLISTS,      /* List of user playlists */
-   STREAMLINED_VIEW_PLAYLIST        /* Games within a specific playlist */
+   STREAMLINED_VIEW_PLAYLIST,       /* Games within a specific playlist */
+   STREAMLINED_VIEW_GAME_SWITCHER   /* Game switcher carousel (history) */
 } streamlined_view_type_t;
 
 /* Per-view data stored in a tagged union */
@@ -273,6 +275,7 @@ typedef struct
       struct { char content_path[PATH_MAX_LENGTH]; } core_select;
       struct { char game_title[256]; } quick_menu;
       struct { char playlist_path[PATH_MAX_LENGTH]; } playlist;
+      struct { size_t count; char title[256]; } game_switcher;
    } data;
 } streamlined_view_t;
 
@@ -391,6 +394,10 @@ typedef struct
    /* User playlist (loaded on demand when browsing a playlist) */
    playlist_t *user_playlist;
 
+   /* Game switcher */
+   gfx_thumbnail_t game_switcher_thumbnail;
+   char game_switcher_thumbnail_path[PATH_MAX_LENGTH];
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -483,6 +490,12 @@ static void streamlined_launch_content(streamlined_t *strm,
 static bool streamlined_read_game_core(
       const char *content_path, char *core_path_out,
       size_t core_path_size);
+static bool streamlined_read_folder_core(
+      const char *folder_path, char *core_path_out,
+      size_t core_path_size);
+static void streamlined_request_loading(streamlined_t *strm,
+      const char *core_path, const char *content_path,
+      bool is_resume);
 static bool streamlined_resolve_core_for_content(
       const char *content_path, const char *folder_core_path,
       char *core_path_out, size_t core_path_size);
@@ -533,6 +546,34 @@ static void streamlined_draw_folder_artwork(
 static void streamlined_artwork_start_scan(
       streamlined_t *strm, const char *folder_path, const char *core_path);
 static void streamlined_artwork_reset(streamlined_artwork_t *art);
+
+/* Shared drawing helpers */
+static void streamlined_draw_thumbnail_frame(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height,
+      int frame_x, int frame_y,
+      int thumb_max_width, int thumb_max_height,
+      int frame_border, int frame_chin,
+      gfx_thumbnail_t *thumbnail,
+      const char *placeholder_text);
+static float streamlined_draw_footer_pill(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height,
+      float x, float pill_y, float text_y,
+      float pill_h, float pill_pad, float gap,
+      const char *key, const char *label);
+
+/* Game switcher forward declarations */
+static void streamlined_game_switcher_select(streamlined_t *strm, size_t index);
+static void streamlined_game_switcher_load_thumbnail(
+      streamlined_t *strm, size_t index);
+static void streamlined_game_switcher_get_display_name(
+      size_t index, char *out, size_t out_size);
+static void streamlined_draw_game_switcher(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height);
+static void streamlined_game_switcher_launch(streamlined_t *strm);
+static void streamlined_game_switcher_remove(streamlined_t *strm);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -1450,7 +1491,8 @@ static bool streamlined_resolve_playlist_artwork(
       return false;
 
    /* Get the playlist for this view */
-   if (view->type == STREAMLINED_VIEW_HISTORY)
+   if (view->type == STREAMLINED_VIEW_HISTORY
+         || view->type == STREAMLINED_VIEW_GAME_SWITCHER)
       playlist = g_defaults.content_history;
    else if (view->type == STREAMLINED_VIEW_FAVORITES)
       playlist = g_defaults.content_favorites;
@@ -1879,6 +1921,103 @@ static void streamlined_load_slot_thumbnail(streamlined_t *strm, int preview_slo
 }
 
 /*
+ * Draw a footer button hint: rounded pill with key letter + label text.
+ * Returns total width consumed (pill + gap + label).
+ */
+static float streamlined_draw_footer_pill(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height,
+      float x, float pill_y, float text_y,
+      float pill_h, float pill_pad, float gap,
+      const char *key, const char *label)
+{
+   int key_w   = font_driver_get_message_width(
+         strm->font_small.font, key, strlen(key), 1.0f);
+   int label_w = font_driver_get_message_width(
+         strm->font_small.font, label, strlen(label), 1.0f);
+   int pill_w  = key_w + (int)(pill_pad * 2.0f);
+
+   streamlined_draw_rounded_pill(strm, p_disp, userdata,
+         (int)x, (int)pill_y, pill_w, (int)pill_h,
+         video_width, video_height, streamlined_color_selection);
+   gfx_display_draw_text(strm->font_small.font,
+         key,
+         (int)(x + pill_pad),
+         (int)text_y,
+         video_width, video_height,
+         streamlined_color_text_dark,
+         TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+   gfx_display_draw_text(strm->font_small.font,
+         label,
+         (int)(x + (float)pill_w + gap),
+         (int)text_y,
+         video_width, video_height,
+         streamlined_color_text,
+         TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+   return (float)pill_w + gap + (float)label_w;
+}
+
+/*
+ * Draw a polaroid-style thumbnail frame with optional placeholder text.
+ * Draws: white frame → aspect-correct thumbnail centered inside → placeholder if missing.
+ * Used by both the save slot selector and the game switcher.
+ */
+static void streamlined_draw_thumbnail_frame(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height,
+      int frame_x, int frame_y,
+      int thumb_max_width, int thumb_max_height,
+      int frame_border, int frame_chin,
+      gfx_thumbnail_t *thumbnail,
+      const char *placeholder_text)
+{
+   int frame_width  = thumb_max_width + frame_border * 2;
+   int frame_height = thumb_max_height + frame_border + frame_chin;
+   int thumb_x      = frame_x + frame_border;
+   int thumb_y      = frame_y + frame_border;
+
+   /* Draw polaroid frame (white background) */
+   gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+         frame_x, frame_y, frame_width, frame_height,
+         video_width, video_height, streamlined_color_selection, NULL);
+
+   /* Draw thumbnail if available */
+   if (thumbnail->status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+   {
+      float draw_width, draw_height;
+
+      gfx_thumbnail_get_draw_dimensions(
+            thumbnail,
+            thumb_max_width, thumb_max_height, 1.0f,
+            &draw_width, &draw_height);
+
+      {
+         int offset_x = (thumb_max_width - (int)draw_width) / 2;
+         int offset_y = (thumb_max_height - (int)draw_height) / 2;
+
+         gfx_thumbnail_draw(userdata, video_width, video_height,
+               thumbnail,
+               (float)(thumb_x + offset_x), (float)(thumb_y + offset_y),
+               (unsigned)draw_width, (unsigned)draw_height,
+               GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
+      }
+   }
+   else if (thumbnail->status == GFX_THUMBNAIL_STATUS_MISSING
+         && placeholder_text)
+   {
+      int text_width = streamlined_get_text_width(strm, placeholder_text, false);
+      int text_x = thumb_x + (thumb_max_width - text_width) / 2;
+      int text_y = thumb_y + thumb_max_height / 2
+            + (int)(strm->font_size * STREAMLINED_TEXT_VCENTER);
+
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            text_x, text_y,
+            placeholder_text, streamlined_color_text_dark, false);
+   }
+}
+
+/*
  * Draw the save slot selector UI: thumbnail preview with polaroid frame and dot indicators.
  * Positioned on the right side of the screen, vertically centered.
  */
@@ -1890,89 +2029,47 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
    int thumb_max_height = (int)(video_height * STREAMLINED_THUMB_HEIGHT_RATIO);
    int thumb_max_width  = (int)(thumb_max_height * STREAMLINED_THUMB_ASPECT_RATIO);
 
-   /* Polaroid frame dimensions */
    int frame_border     = (int)(STREAMLINED_FRAME_BORDER_BASE * strm->scale_factor);
    int frame_bottom     = (int)(STREAMLINED_FRAME_CHIN_BASE * strm->scale_factor);
    int frame_width      = thumb_max_width + frame_border * 2;
    int frame_height     = thumb_max_height + frame_border + frame_bottom;
 
    int frame_x, frame_y;
-   int thumb_x, thumb_y;
    int dot_y, dot_spacing, dot_radius;
    int total_dots_width;
    int dots_start_x;
 
-   /* Calculate dot dimensions first (needed for vertical centering) */
    dot_radius  = (int)(STREAMLINED_DOT_RADIUS_BASE * strm->scale_factor);
    dot_spacing = (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor);
 
    /* Position frame on right side, vertically centered with dots below */
    frame_x = video_width - strm->margin_x - frame_width;
-   frame_y = (video_height - frame_height - dot_radius * 2 - (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor)) / 2;
+   frame_y = (video_height - frame_height - dot_radius * 2
+         - (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor)) / 2;
 
-   /* Thumbnail position inside frame */
-   thumb_x = frame_x + frame_border;
-   thumb_y = frame_y + frame_border;
-
-   /* Draw polaroid frame (white background) */
-   gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
-         frame_x, frame_y, frame_width, frame_height,
-         video_width, video_height, streamlined_color_selection, NULL);
-
-   /* Draw thumbnail if available */
-   if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+   /* Determine placeholder text for missing thumbnails */
    {
-      float draw_width, draw_height;
-
-      /* Calculate aspect-correct dimensions */
-      gfx_thumbnail_get_draw_dimensions(
-            &strm->savestate_thumbnail,
-            thumb_max_width, thumb_max_height, 1.0f,
-            &draw_width, &draw_height);
-
-      /* Center within thumbnail area */
-      {
-         int offset_x = (thumb_max_width - (int)draw_width) / 2;
-         int offset_y = (thumb_max_height - (int)draw_height) / 2;
-
-         gfx_thumbnail_draw(userdata, video_width, video_height,
-               &strm->savestate_thumbnail,
-               (float)(thumb_x + offset_x), (float)(thumb_y + offset_y),
-               (unsigned)draw_width, (unsigned)draw_height,
-               GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
-      }
-   }
-   else if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
-   {
-      /* Only show placeholder when we know the thumbnail is missing (not while loading) */
       const char *placeholder;
       char state_path[PATH_MAX_LENGTH];
       int preview_state_slot = strm->preview_slot - 1;
 
-      /* Check if save state exists (without .png) to determine message */
       if (runloop_get_savestate_path(state_path, sizeof(state_path), preview_state_slot)
             && path_is_valid(state_path))
          placeholder = "No Screenshot";
       else
          placeholder = "Empty";
 
-      /* Draw placeholder text centered in thumbnail area */
-      {
-         int text_width = streamlined_get_text_width(strm, placeholder, false);
-         int text_x = thumb_x + (thumb_max_width - text_width) / 2;
-         /* Center vertically: account for font baseline by adding ~1/3 of font size */
-         int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * STREAMLINED_TEXT_VCENTER);
-
-         streamlined_draw_text(strm, p_disp, video_width, video_height,
-               text_x, text_y,
-               placeholder, streamlined_color_text_dark, false);
-      }
+      streamlined_draw_thumbnail_frame(strm, p_disp, userdata,
+            video_width, video_height,
+            frame_x, frame_y, thumb_max_width, thumb_max_height,
+            frame_border, frame_bottom,
+            &strm->savestate_thumbnail, placeholder);
    }
 
    /* Draw slot indicators in the polaroid chin: 'A' for auto, dots for 0-7 */
    total_dots_width = STREAMLINED_NUM_SLOTS * (dot_radius * 2)
          + (STREAMLINED_NUM_SLOTS - 1) * (dot_spacing - dot_radius * 2);
-   dot_y = thumb_y + thumb_max_height + (frame_bottom - dot_radius * 2) / 2;
+   dot_y = frame_y + frame_border + thumb_max_height + (frame_bottom - dot_radius * 2) / 2;
    dots_start_x = frame_x + (frame_width - total_dots_width) / 2;
 
    for (i = 0; i < STREAMLINED_NUM_SLOTS; i++)
@@ -2002,6 +2099,362 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
                video_width, video_height, color);
       }
    }
+}
+
+/* ======================================================================
+ * GAME SWITCHER
+ * ====================================================================== */
+
+static void streamlined_game_switcher_get_display_name(
+      size_t index, char *out, size_t out_size)
+{
+   const struct playlist_entry *pl_entry = NULL;
+   char resolved_path[PATH_MAX_LENGTH];
+
+   out[0] = '\0';
+
+   if (!g_defaults.content_history
+         || index >= playlist_size(g_defaults.content_history))
+      return;
+
+   playlist_get_index(g_defaults.content_history, index, &pl_entry);
+   if (!pl_entry || string_is_empty(pl_entry->path))
+      return;
+
+   strlcpy(resolved_path, pl_entry->path, sizeof(resolved_path));
+   playlist_resolve_path(PLAYLIST_LOAD, false,
+         resolved_path, sizeof(resolved_path));
+
+   /* Check if content is a disc file inside an m3u folder */
+   {
+      char parent_dir[PATH_MAX_LENGTH];
+      char m3u_path[PATH_MAX_LENGTH];
+      size_t parent_len;
+
+      fill_pathname_basedir(parent_dir, resolved_path, sizeof(parent_dir));
+      parent_len = strlen(parent_dir);
+      if (parent_len > 1 && parent_dir[parent_len - 1] == '/')
+         parent_dir[parent_len - 1] = '\0';
+
+      if (streamlined_detect_m3u_folder(parent_dir,
+               m3u_path, sizeof(m3u_path)))
+      {
+         const char *folder_name = path_basename(parent_dir);
+         const char *clean = streamlined_strip_sort_prefix(
+               folder_name ? folder_name : "");
+         strlcpy(out, clean, out_size);
+         return;
+      }
+   }
+
+   /* Use playlist label, or strip extension from filename */
+   if (!string_is_empty(pl_entry->label))
+      strlcpy(out, pl_entry->label, out_size);
+   else
+   {
+      const char *basename = path_basename(resolved_path);
+      strlcpy(out, basename ? basename : resolved_path, out_size);
+      path_remove_extension(out);
+   }
+}
+
+static void streamlined_game_switcher_load_thumbnail(
+      streamlined_t *strm, size_t index)
+{
+   const struct playlist_entry *pl_entry = NULL;
+   char resolved_content[PATH_MAX_LENGTH];
+   char resolved_core[PATH_MAX_LENGTH];
+   char auto_path[PATH_MAX_LENGTH];
+   char png_path[PATH_MAX_LENGTH];
+   char artwork_path[PATH_MAX_LENGTH];
+   const char *final_path = NULL;
+   settings_t *settings = config_get_ptr();
+
+   if (!g_defaults.content_history
+         || index >= playlist_size(g_defaults.content_history))
+      return;
+
+   playlist_get_index(g_defaults.content_history, index, &pl_entry);
+   if (!pl_entry || string_is_empty(pl_entry->path))
+      return;
+
+   /* Resolve content path */
+   strlcpy(resolved_content, pl_entry->path, sizeof(resolved_content));
+   playlist_resolve_path(PLAYLIST_LOAD, false,
+         resolved_content, sizeof(resolved_content));
+
+   /* Resolve core path via the shared helper */
+   if (!streamlined_get_entry_core_path(strm, resolved_content,
+            index, resolved_core, sizeof(resolved_core)))
+      resolved_core[0] = '\0';
+
+   /* Try autosave screenshot first */
+   {
+      char actual_content[PATH_MAX_LENGTH];
+      if (!streamlined_resolve_m3u_content(resolved_content,
+               resolved_core, actual_content, sizeof(actual_content)))
+         strlcpy(actual_content, resolved_content, sizeof(actual_content));
+
+      if (streamlined_get_auto_savestate_path(actual_content,
+               resolved_core, auto_path, sizeof(auto_path)))
+      {
+         strlcpy(png_path, auto_path, sizeof(png_path));
+         strlcat(png_path, ".png", sizeof(png_path));
+
+         if (path_is_valid(png_path))
+            final_path = png_path;
+      }
+   }
+
+   /* Fallback to game artwork */
+   if (!final_path)
+   {
+      if (streamlined_resolve_playlist_artwork(strm, index,
+               artwork_path, sizeof(artwork_path)))
+         final_path = artwork_path;
+   }
+
+   /* Load the thumbnail if we found a path */
+   if (final_path)
+   {
+      if (!string_is_equal(final_path, strm->game_switcher_thumbnail_path))
+      {
+         strlcpy(strm->game_switcher_thumbnail_path, final_path,
+               sizeof(strm->game_switcher_thumbnail_path));
+         gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+         gfx_thumbnail_request_file(final_path,
+               &strm->game_switcher_thumbnail,
+               settings->uints.gfx_thumbnail_upscale_threshold);
+         strm->game_switcher_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
+      }
+   }
+   else
+   {
+      /* No image available - mark as missing so placeholder text is shown */
+      strm->game_switcher_thumbnail_path[0] = '\0';
+      gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+      strm->game_switcher_thumbnail.status = GFX_THUMBNAIL_STATUS_MISSING;
+   }
+}
+
+static void streamlined_game_switcher_reset_thumbnail(streamlined_t *strm)
+{
+   gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+   strm->game_switcher_thumbnail_path[0] = '\0';
+}
+
+static void streamlined_game_switcher_select(streamlined_t *strm, size_t index)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   if (!view || view->type != STREAMLINED_VIEW_GAME_SWITCHER)
+      return;
+
+   view->saved_selection = index;
+   streamlined_game_switcher_get_display_name(
+         index, view->data.game_switcher.title,
+         sizeof(view->data.game_switcher.title));
+   streamlined_game_switcher_load_thumbnail(strm, index);
+}
+
+static void streamlined_draw_game_switcher(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   float scale = strm->scale_factor;
+
+   int thumb_max_height = (int)(video_height * STREAMLINED_SWITCHER_THUMB_HEIGHT_RATIO);
+   int thumb_max_width  = (int)(thumb_max_height * STREAMLINED_THUMB_ASPECT_RATIO);
+   int frame_border     = (int)(STREAMLINED_FRAME_BORDER_BASE * scale);
+   int frame_chin       = frame_border;  /* Uniform border — no dot indicators */
+   int frame_width      = thumb_max_width + frame_border * 2;
+   int frame_height     = thumb_max_height + frame_border + frame_chin;
+
+   int frame_x, frame_y;
+
+   /* Footer layout */
+   float footer_height  = STREAMLINED_FOOTER_HEIGHT_BASE * scale;
+   float footer_margin  = STREAMLINED_FOOTER_MARGIN_BASE * scale;
+   float pill_h         = strm->font_size_small + STREAMLINED_FOOTER_GAP * scale;
+   float pill_pad       = STREAMLINED_FOOTER_PILL_PAD * scale;
+   float pill_text_gap  = STREAMLINED_FOOTER_GAP * scale;
+   float footer_center_y = (float)video_height - (footer_height / 2.0f);
+   float pill_y         = footer_center_y - (pill_h / 2.0f);
+   float text_y         = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_VCENTER);
+
+   if (!view)
+      return;
+
+   /* Dark overlay */
+   gfx_display_draw_quad(p_disp, userdata,
+         video_width, video_height,
+         0, 0, video_width, video_height,
+         video_width, video_height,
+         streamlined_color_bg, NULL);
+
+   /* Center the frame horizontally, offset upward to leave room for footer */
+   frame_x = ((int)video_width - frame_width) / 2;
+   frame_y = ((int)video_height - frame_height - (int)footer_height) / 2;
+
+   /* Draw thumbnail in polaroid frame if available, otherwise show placeholder text */
+   if (strm->game_switcher_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+   {
+      streamlined_draw_thumbnail_frame(strm, p_disp, userdata,
+            video_width, video_height,
+            frame_x, frame_y, thumb_max_width, thumb_max_height,
+            frame_border, frame_chin,
+            &strm->game_switcher_thumbnail, NULL);
+   }
+   else if (strm->game_switcher_thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN)
+   {
+      /* No image — show centered placeholder text on dark background */
+      const char *placeholder = "No Image Available";
+      int text_width = streamlined_get_text_width(strm, placeholder, false);
+      int center_x = ((int)video_width - text_width) / 2;
+      int center_y = frame_y + frame_height / 2
+            + (int)(strm->font_size * STREAMLINED_TEXT_VCENTER);
+
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            center_x, center_y,
+            placeholder, streamlined_color_text_muted, false);
+   }
+
+   /* Footer: [B] Back ... title ... [A] Play */
+   {
+      float ok_pill_x;
+      int ok_key_w, ok_label_w, ok_pill_w;
+      float title_center_x;
+      int title_w;
+
+      /* Left: [B] Back */
+      streamlined_draw_footer_pill(strm, p_disp, userdata,
+            video_width, video_height,
+            footer_margin, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+            "B", "Back");
+
+      /* Right: [A] Play */
+      ok_key_w   = font_driver_get_message_width(
+            strm->font_small.font, "A", 1, 1.0f);
+      ok_label_w = font_driver_get_message_width(
+            strm->font_small.font, "Play", 4, 1.0f);
+      ok_pill_w  = ok_key_w + (int)(pill_pad * 2.0f);
+      ok_pill_x  = (float)video_width - footer_margin
+            - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
+
+      streamlined_draw_footer_pill(strm, p_disp, userdata,
+            video_width, video_height,
+            ok_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+            "A", "Play");
+
+      /* Center: game title */
+      if (view->data.game_switcher.title[0] != '\0')
+      {
+         font_data_t *title_font = strm->font_title.font
+               ? strm->font_title.font : strm->font.font;
+         title_center_x = (float)video_width / 2.0f;
+         title_w = font_driver_get_message_width(title_font,
+               view->data.game_switcher.title,
+               strlen(view->data.game_switcher.title), 1.0f);
+
+         gfx_display_draw_text(title_font,
+               view->data.game_switcher.title,
+               (int)(title_center_x - (float)title_w / 2.0f),
+               (int)text_y,
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      }
+   }
+}
+
+static void streamlined_game_switcher_launch(streamlined_t *strm)
+{
+   const struct playlist_entry *pl_entry = NULL;
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   char resolved_content[PATH_MAX_LENGTH];
+   char resolved_core[PATH_MAX_LENGTH];
+   size_t idx;
+
+   if (!view || view->type != STREAMLINED_VIEW_GAME_SWITCHER)
+      return;
+
+   idx = view->saved_selection;
+
+   if (!g_defaults.content_history
+         || idx >= playlist_size(g_defaults.content_history))
+      return;
+
+   playlist_get_index(g_defaults.content_history, idx, &pl_entry);
+   if (!pl_entry || string_is_empty(pl_entry->path))
+      return;
+
+   /* Resolve content path */
+   strlcpy(resolved_content, pl_entry->path, sizeof(resolved_content));
+   playlist_resolve_path(PLAYLIST_LOAD, false,
+         resolved_content, sizeof(resolved_content));
+
+   /* Resolve core path */
+   if (!streamlined_get_entry_core_path(strm, resolved_content,
+            idx, resolved_core, sizeof(resolved_core))
+         || !path_is_valid(resolved_core))
+      return;
+
+   streamlined_game_switcher_reset_thumbnail(strm);
+
+   /* Set resume state before clearing stack — launch_content won't find
+    * GAME_SWITCHER in its stack scan, so we set resume manually */
+   strm->resume.active        = true;
+   strm->resume.source        = STREAMLINED_RESUME_HISTORY;
+   strm->resume.folder_path[0] = '\0';
+   strm->resume.selection     = idx;
+
+   /* Clear view stack so launch_content doesn't find stale views */
+   strm->view_stack.top = -1;
+
+   streamlined_request_loading(strm, resolved_core, resolved_content, true);
+}
+
+static void streamlined_game_switcher_remove(streamlined_t *strm)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   size_t idx, count;
+
+   if (!view || view->type != STREAMLINED_VIEW_GAME_SWITCHER)
+      return;
+
+   idx   = view->saved_selection;
+   count = view->data.game_switcher.count;
+
+   if (!g_defaults.content_history || idx >= count)
+      return;
+
+   /* Remove entry and persist */
+   playlist_delete_index(g_defaults.content_history, idx);
+   playlist_write_file(g_defaults.content_history);
+
+   /* Update count */
+   count--;
+   view->data.game_switcher.count = count;
+
+   if (count == 0)
+   {
+      /* No more entries — close the switcher */
+      streamlined_game_switcher_reset_thumbnail(strm);
+      streamlined_view_pop(&strm->view_stack);
+      {
+         streamlined_view_t *parent = streamlined_view_current(&strm->view_stack);
+         if (parent && parent->type == STREAMLINED_VIEW_MAIN_MENU)
+            streamlined_pop_nav_marker();
+      }
+      return;
+   }
+
+   /* Clamp index if we removed the last entry */
+   if (idx >= count)
+      idx = count - 1;
+
+   /* Reload the current entry */
+   streamlined_game_switcher_select(strm, idx);
 }
 
 /* ======================================================================
@@ -2214,6 +2667,11 @@ static void streamlined_render_menu(streamlined_t *strm,
             strlcpy(title_buf, "Quick Menu", sizeof(title_buf));
          break;
       }
+      case STREAMLINED_VIEW_GAME_SWITCHER:
+         /* Game switcher draws its own full-screen UI */
+         streamlined_draw_game_switcher(strm, p_disp, userdata,
+               video_width, video_height);
+         return;
       default:
       {
          menu_entries_get_title(title_buf, sizeof(title_buf));
@@ -2473,8 +2931,6 @@ static void streamlined_render_menu(streamlined_t *strm,
       float pill_y           = footer_center_y - (pill_h / 2.0f);
       float text_y           = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_VCENTER);
 
-      int back_key_w, ok_key_w;
-      int back_pill_w, ok_pill_w;
       float ok_pill_x        = 0;
       float left_end         = 0;
       const char *back_key   = "B";
@@ -2512,67 +2968,28 @@ static void streamlined_render_menu(streamlined_t *strm,
          }
       }
 
-      back_key_w  = font_driver_get_message_width(
-            strm->font_small.font, back_key, strlen(back_key), 1.0f);
-      ok_key_w    = font_driver_get_message_width(
-            strm->font_small.font, ok_key, strlen(ok_key), 1.0f);
-      back_pill_w = back_key_w + (int)(pill_pad * 2.0f);
-      ok_pill_w   = ok_key_w + (int)(pill_pad * 2.0f);
-
       /* Left side: [margin] [B pill] [gap] Back */
-      streamlined_draw_rounded_pill(strm, p_disp, userdata,
-            (int)footer_margin, (int)pill_y, back_pill_w, (int)pill_h,
-            video_width, video_height, streamlined_color_selection);
-      gfx_display_draw_text(strm->font_small.font,
-            back_key,
-            (int)(footer_margin + pill_pad),
-            (int)text_y,
-            video_width, video_height,
-            streamlined_color_text_dark,
-            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
-      gfx_display_draw_text(strm->font_small.font,
-            back_str,
-            (int)(footer_margin + (float)back_pill_w + pill_text_gap),
-            (int)text_y,
-            video_width, video_height,
-            streamlined_color_text,
-            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
-
-      /* Compute where the left hint group ends (for sublabel centering) */
-      {
-         int back_label_w = font_driver_get_message_width(
-               strm->font_small.font, back_str, strlen(back_str), 1.0f);
-         left_end = footer_margin + (float)back_pill_w
-               + pill_text_gap + (float)back_label_w;
-      }
+      left_end = footer_margin + streamlined_draw_footer_pill(strm,
+            p_disp, userdata, video_width, video_height,
+            footer_margin, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+            back_key, back_str);
 
       /* Right side hint(s) */
       {
          bool show_resume_hint = strm->auto_save_cache.has_auto_save
                && streamlined_is_game_view(vtype);
+         int ok_key_w   = font_driver_get_message_width(
+               strm->font_small.font, ok_key, strlen(ok_key), 1.0f);
          int ok_label_w = font_driver_get_message_width(
                strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
+         int ok_pill_w  = ok_key_w + (int)(pill_pad * 2.0f);
          ok_pill_x = (float)video_width - footer_margin
                - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
-         /* Draw the primary right-side hint: either (X) Resume or (A) Play/OK */
-         streamlined_draw_rounded_pill(strm, p_disp, userdata,
-               (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
-               video_width, video_height, streamlined_color_selection);
-         gfx_display_draw_text(strm->font_small.font,
-               ok_key,
-               (int)(ok_pill_x + pill_pad),
-               (int)text_y,
+         streamlined_draw_footer_pill(strm, p_disp, userdata,
                video_width, video_height,
-               streamlined_color_text_dark,
-               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
-         gfx_display_draw_text(strm->font_small.font,
-               ok_str,
-               (int)(ok_pill_x + (float)ok_pill_w + pill_text_gap),
-               (int)text_y,
-               video_width, video_height,
-               streamlined_color_text,
-               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+               ok_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+               ok_key, ok_str);
 
          /* When auto_load is OFF and auto save exists, draw (X) Resume
           * to the left of (A) Play */
@@ -2580,31 +2997,18 @@ static void streamlined_render_menu(streamlined_t *strm,
          {
             const char *resume_key = "X";
             const char *resume_str = "Resume";
-            int resume_key_w = font_driver_get_message_width(
+            int resume_key_w   = font_driver_get_message_width(
                   strm->font_small.font, resume_key, strlen(resume_key), 1.0f);
             int resume_label_w = font_driver_get_message_width(
                   strm->font_small.font, resume_str, strlen(resume_str), 1.0f);
-            int resume_pill_w = resume_key_w + (int)(pill_pad * 2.0f);
+            int resume_pill_w  = resume_key_w + (int)(pill_pad * 2.0f);
             float resume_pill_x = ok_pill_x - pill_text_gap
                   - (float)resume_label_w - pill_text_gap - (float)resume_pill_w;
 
-            streamlined_draw_rounded_pill(strm, p_disp, userdata,
-                  (int)resume_pill_x, (int)pill_y, resume_pill_w, (int)pill_h,
-                  video_width, video_height, streamlined_color_selection);
-            gfx_display_draw_text(strm->font_small.font,
-                  resume_key,
-                  (int)(resume_pill_x + pill_pad),
-                  (int)text_y,
+            streamlined_draw_footer_pill(strm, p_disp, userdata,
                   video_width, video_height,
-                  streamlined_color_text_dark,
-                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
-            gfx_display_draw_text(strm->font_small.font,
-                  resume_str,
-                  (int)(resume_pill_x + (float)resume_pill_w + pill_text_gap),
-                  (int)text_y,
-                  video_width, video_height,
-                  streamlined_color_text,
-                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+                  resume_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+                  resume_key, resume_str);
          }
       }
 
@@ -3289,12 +3693,14 @@ static bool streamlined_get_entry_core_path(
 
    if (view->type == STREAMLINED_VIEW_HISTORY
          || view->type == STREAMLINED_VIEW_FAVORITES
-         || view->type == STREAMLINED_VIEW_PLAYLIST)
+         || view->type == STREAMLINED_VIEW_PLAYLIST
+         || view->type == STREAMLINED_VIEW_GAME_SWITCHER)
    {
       playlist_t *playlist;
       const struct playlist_entry *pl_entry = NULL;
 
-      if (view->type == STREAMLINED_VIEW_HISTORY)
+      if (view->type == STREAMLINED_VIEW_HISTORY
+            || view->type == STREAMLINED_VIEW_GAME_SWITCHER)
          playlist = g_defaults.content_history;
       else if (view->type == STREAMLINED_VIEW_FAVORITES)
          playlist = g_defaults.content_favorites;
@@ -4054,6 +4460,9 @@ static void streamlined_free(void *data)
       /* Free user playlist */
       streamlined_user_playlist_free(strm);
 
+      /* Free game switcher thumbnail */
+      gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+
       /* Free artwork state */
       if (strm->artwork.scan_task)
       {
@@ -4468,6 +4877,10 @@ static void streamlined_populate_entries(void *data,
             view = streamlined_view_current(&strm->view_stack);
          }
 
+         /* Game switcher manages its own state — don't interfere */
+         if (view && view->type == STREAMLINED_VIEW_GAME_SWITCHER)
+            return;
+
          if (strm->resume.active
                && (strm->resume.source == STREAMLINED_RESUME_HISTORY
                    || strm->resume.source == STREAMLINED_RESUME_FAVORITES
@@ -4865,6 +5278,31 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    view = streamlined_view_current(&strm->view_stack);
    if (!view)
       return generic_menu_entry_action(userdata, entry, i, action);
+
+   /* Game switcher: SELECT from any view opens it */
+   if (action == MENU_ACTION_INFO
+         && view->type != STREAMLINED_VIEW_GAME_SWITCHER
+         && view->type != STREAMLINED_VIEW_RA_SETTINGS)
+   {
+      size_t count = g_defaults.content_history
+            ? playlist_size(g_defaults.content_history) : 0;
+      if (count > 0)
+      {
+         streamlined_view_t *gsv;
+         bool from_main = (view->type == STREAMLINED_VIEW_MAIN_MENU);
+         view->saved_selection = menu_st->selection_ptr;
+         gsv = streamlined_view_push(&strm->view_stack,
+               STREAMLINED_VIEW_GAME_SWITCHER);
+         if (gsv)
+         {
+            gsv->data.game_switcher.count = count;
+            streamlined_game_switcher_select(strm, 0);
+            if (from_main)
+               streamlined_push_nav_marker();
+         }
+      }
+      return 0;
+   }
 
    switch (view->type)
    {
@@ -5414,6 +5852,49 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       case STREAMLINED_VIEW_RA_SETTINGS:
          /* All input handled by generic handler */
          return generic_menu_entry_action(userdata, entry, i, action);
+
+      case STREAMLINED_VIEW_GAME_SWITCHER:
+      {
+         size_t count = view->data.game_switcher.count;
+         size_t idx   = view->saved_selection;
+
+         if (action == MENU_ACTION_LEFT || action == MENU_ACTION_SCROLL_UP)
+         {
+            size_t new_idx = (idx == 0) ? count - 1 : idx - 1;
+            streamlined_game_switcher_select(strm, new_idx);
+            return 0;
+         }
+         if (action == MENU_ACTION_RIGHT || action == MENU_ACTION_SCROLL_DOWN)
+         {
+            size_t new_idx = (idx + 1 >= count) ? 0 : idx + 1;
+            streamlined_game_switcher_select(strm, new_idx);
+            return 0;
+         }
+         if (action == MENU_ACTION_OK)  /* A button: launch with autosave */
+         {
+            streamlined_game_switcher_launch(strm);
+            return 0;
+         }
+         if (action == MENU_ACTION_SCAN)  /* X button: remove from history */
+         {
+            streamlined_game_switcher_remove(strm);
+            return 0;
+         }
+         if (action == MENU_ACTION_CANCEL)  /* B button: pop back */
+         {
+            streamlined_game_switcher_reset_thumbnail(strm);
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view)
+            {
+               if (view->type == STREAMLINED_VIEW_MAIN_MENU)
+                  streamlined_pop_nav_marker();
+               menu_st->selection_ptr = view->saved_selection;
+            }
+            return 0;
+         }
+         return 0;  /* Block all other input */
+      }
 
       default:
          break;
