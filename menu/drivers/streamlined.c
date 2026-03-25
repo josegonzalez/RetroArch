@@ -561,6 +561,9 @@ static bool streamlined_resolve_playlist_artwork(
 static void streamlined_populate_game_list_options(streamlined_t *strm);
 static void streamlined_glo_launch_without_resume(streamlined_t *strm);
 static void streamlined_glo_random_game(streamlined_t *strm);
+static void streamlined_glo_add_to_favorites(streamlined_t *strm);
+static void streamlined_glo_pop_to_source(
+      streamlined_t *strm, struct menu_state *menu_st);
 static void streamlined_populate_random_preview(streamlined_t *strm);
 static void streamlined_glo_confirm_remove(streamlined_t *strm);
 static void streamlined_populate_confirm_remove(streamlined_t *strm);
@@ -577,6 +580,9 @@ static void streamlined_return_to_glo(
 static void streamlined_enter_subfolder(
       streamlined_t *strm, const char *item_path,
       bool push_nav_marker);
+static void streamlined_populate_folder_menu(
+      streamlined_t *strm, const char *directory,
+      bool show_folder_slash);
 
 /* Artwork forward declarations */
 static const char *streamlined_get_artwork_type_dir(unsigned artwork_type);
@@ -1216,6 +1222,65 @@ static uint32_t streamlined_compute_file_crc32(const char *filepath)
 }
 
 /*
+ * Query RDB databases associated with a core to find the canonical name
+ * and system name for a given CRC32. Returns true if a match was found.
+ */
+static bool streamlined_query_rdb_for_crc(
+      core_info_t *core_info,
+      const char *content_database_dir,
+      uint32_t crc,
+      char *canonical_out, size_t canonical_size,
+      char *system_out, size_t system_size)
+{
+   size_t db_idx;
+
+   canonical_out[0] = '\0';
+   system_out[0]    = '\0';
+
+   if (!core_info || !core_info->databases_list)
+      return false;
+
+   for (db_idx = 0; db_idx < core_info->databases_list->size; db_idx++)
+   {
+      char rdb_path[PATH_MAX_LENGTH];
+      char query[256];
+      database_info_list_t *db_list;
+      const char *db_name =
+            core_info->databases_list->elems[db_idx].data;
+
+      if (string_is_empty(db_name))
+         continue;
+
+      snprintf(rdb_path, sizeof(rdb_path), "%s/%s.rdb",
+            content_database_dir, db_name);
+
+      if (!path_is_valid(rdb_path))
+         continue;
+
+      snprintf(query, sizeof(query),
+            "{crc:b\"%08lX\"}", (unsigned long)crc);
+
+      db_list = database_info_list_new(rdb_path, query);
+      if (db_list && db_list->count > 0 && db_list->list)
+      {
+         const char *canonical = db_list->list[0].name;
+         if (!string_is_empty(canonical))
+         {
+            strlcpy(canonical_out, canonical, canonical_size);
+            strlcpy(system_out, db_name, system_size);
+         }
+         database_info_list_free(db_list);
+         return true;
+      }
+
+      if (db_list)
+         database_info_list_free(db_list);
+   }
+
+   return false;
+}
+
+/*
  * Background task handler: scan files in a folder, compute CRC32s,
  * look up canonical names in RDB databases associated with the core.
  */
@@ -1308,57 +1373,21 @@ static void streamlined_artwork_scan_task_handler(retro_task_t *task)
          continue;
       }
 
-      /* Query each database associated with the core */
-      if (core_info && core_info->databases_list)
+      /* Query RDB databases for canonical name */
       {
-         size_t db_idx;
-         for (db_idx = 0; db_idx < core_info->databases_list->size; db_idx++)
+         char canonical[256];
+         char system_name[256];
+
+         if (streamlined_query_rdb_for_crc(core_info,
+               data->content_database_dir, crc,
+               canonical, sizeof(canonical),
+               system_name, sizeof(system_name)))
          {
-            char rdb_path[PATH_MAX_LENGTH];
-            char query[256];
-            database_info_list_t *db_list;
-            const char *db_name =
-                  core_info->databases_list->elems[db_idx].data;
-
-            if (string_is_empty(db_name))
-               continue;
-
-            snprintf(rdb_path, sizeof(rdb_path), "%s/%s.rdb",
-                  data->content_database_dir, db_name);
-
-            if (!path_is_valid(rdb_path))
-            {
-               RARCH_LOG("[streamlined artwork] RDB not found: %s\n", rdb_path);
-               continue;
-            }
-
-            snprintf(query, sizeof(query),
-                  "{crc:b\"%08lX\"}", (unsigned long)crc);
-
-            RARCH_LOG("[streamlined artwork] Querying %s with %s\n",
-                  db_name, query);
-
-            db_list = database_info_list_new(rdb_path, query);
-            if (db_list && db_list->count > 0 && db_list->list)
-            {
-               const char *canonical = db_list->list[0].name;
-               RARCH_LOG("[streamlined artwork] RDB match: \"%s\"\n",
-                     canonical ? canonical : "(null)");
-               if (!string_is_empty(canonical))
-               {
-                  streamlined_artwork_cache_add(&data->new_entries,
-                        filename, crc, canonical, db_name);
-                  found = true;
-               }
-               database_info_list_free(db_list);
-               break;
-            }
-            else
-               RARCH_LOG("[streamlined artwork] No RDB match for CRC %08lX in %s\n",
-                     (unsigned long)crc, db_name);
-
-            if (db_list)
-               database_info_list_free(db_list);
+            RARCH_LOG("[streamlined artwork] RDB match: \"%s\" (system: %s)\n",
+                  canonical, system_name);
+            streamlined_artwork_cache_add(&data->new_entries,
+                  filename, crc, canonical, system_name);
+            found = true;
          }
       }
 
@@ -2580,6 +2609,55 @@ static void streamlined_game_switcher_launch(streamlined_t *strm)
    streamlined_request_loading(strm, resolved_core, resolved_content, true);
 }
 
+/*
+ * Pop the GLO view and return to the source view.
+ * Repopulates the source view's menu entries and restores the saved selection.
+ */
+static void streamlined_glo_pop_to_source(
+      streamlined_t *strm, struct menu_state *menu_st)
+{
+   streamlined_view_t *view;
+
+   streamlined_view_pop(&strm->view_stack);
+   view = streamlined_view_current(&strm->view_stack);
+   if (view)
+   {
+      switch (view->type)
+      {
+         case STREAMLINED_VIEW_MAIN_MENU:
+            streamlined_pop_nav_marker();
+            streamlined_populate_folder_menu(strm,
+                  view->data.main_menu.folder_path, false);
+            break;
+         case STREAMLINED_VIEW_FOLDER:
+            streamlined_populate_folder_menu(strm,
+                  view->data.folder.folder_path, true);
+            break;
+         case STREAMLINED_VIEW_HISTORY:
+            streamlined_populate_playlist_view(strm,
+                  g_defaults.content_history, "No history");
+            break;
+         case STREAMLINED_VIEW_FAVORITES:
+            streamlined_populate_playlist_view(strm,
+                  g_defaults.content_favorites, "No favorites");
+            break;
+         case STREAMLINED_VIEW_PLAYLIST:
+            streamlined_populate_playlist_view(strm,
+                  strm->user_playlist, "No games in playlist");
+            break;
+         case STREAMLINED_VIEW_PLAYLISTS:
+            streamlined_populate_playlists_list(strm);
+            break;
+         case STREAMLINED_VIEW_GAME_SWITCHER:
+            /* Switcher manages its own rendering */
+            break;
+         default:
+            break;
+      }
+      menu_st->selection_ptr = view->saved_selection;
+   }
+}
+
 static void streamlined_glo_launch_without_resume(streamlined_t *strm)
 {
    streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
@@ -2642,6 +2720,160 @@ static void streamlined_glo_confirm_remove(streamlined_t *strm)
             sizeof(confirm->data.confirm_remove.item_label));
       streamlined_populate_confirm_remove(strm);
    }
+}
+
+/*
+ * GLO action: add the selected game to the favorites playlist.
+ * Resolves metadata (crc32, db_name) from the source playlist when available,
+ * or computes CRC32 and queries RDB on the fly for folder entries.
+ */
+static void streamlined_glo_add_to_favorites(streamlined_t *strm)
+{
+   streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
+   streamlined_view_type_t source;
+   struct string_list *str_list;
+   union string_list_elem_attr attr;
+   core_info_t *core_info = NULL;
+   char core_name[256];
+   const char *crc32_str   = "";
+   const char *db_name_str = "";
+   char crc32_buf[16];
+   char db_name_buf[256];
+   struct menu_state *menu_st;
+
+   if (!glo || glo->type != STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+      return;
+
+   if (string_is_empty(glo->data.game_list_options.core_path))
+      return;
+
+   source = glo->data.game_list_options.source_type;
+
+   /* Resolve core display name */
+   core_name[0] = '\0';
+   if (core_info_find(glo->data.game_list_options.core_path, &core_info)
+         && core_info && !string_is_empty(core_info->display_name))
+      strlcpy(core_name, core_info->display_name, sizeof(core_name));
+
+   if (string_is_empty(core_name))
+      fill_pathname(core_name,
+            path_basename(glo->data.game_list_options.core_path), "",
+            sizeof(core_name));
+
+   /* Resolve crc32 and db_name from source */
+   crc32_buf[0]   = '\0';
+   db_name_buf[0] = '\0';
+
+   if (source == STREAMLINED_VIEW_HISTORY
+         || source == STREAMLINED_VIEW_GAME_SWITCHER)
+   {
+      const struct playlist_entry *pl_entry = NULL;
+      playlist_get_index(g_defaults.content_history,
+            glo->data.game_list_options.entry_idx, &pl_entry);
+      if (pl_entry)
+      {
+         if (!string_is_empty(pl_entry->crc32))
+            crc32_str = pl_entry->crc32;
+         if (!string_is_empty(pl_entry->db_name))
+            db_name_str = pl_entry->db_name;
+      }
+   }
+   else if (source == STREAMLINED_VIEW_PLAYLIST)
+   {
+      const struct playlist_entry *pl_entry = NULL;
+      if (strm->user_playlist)
+         playlist_get_index(strm->user_playlist,
+               glo->data.game_list_options.entry_idx, &pl_entry);
+      if (pl_entry)
+      {
+         if (!string_is_empty(pl_entry->crc32))
+            crc32_str = pl_entry->crc32;
+         if (!string_is_empty(pl_entry->db_name))
+            db_name_str = pl_entry->db_name;
+      }
+   }
+   else if (source == STREAMLINED_VIEW_FOLDER)
+   {
+      const char *filename = path_basename(
+            glo->data.game_list_options.item_path);
+      streamlined_name_cache_entry_t *cached = NULL;
+      uint32_t crc = 0;
+
+      /* Check artwork cache first */
+      if (filename)
+         cached = streamlined_artwork_cache_find(
+               strm->artwork.cache, filename);
+
+      if (cached && cached->crc32 != 0)
+         crc = cached->crc32;
+      else
+      {
+         /* Compute CRC32 on the fly (archive + plain file) */
+         crc = file_archive_get_file_crc32(
+               glo->data.game_list_options.item_path);
+         if (crc == 0)
+            crc = streamlined_compute_file_crc32(
+                  glo->data.game_list_options.item_path);
+      }
+
+      if (crc != 0)
+      {
+         char canonical[256];
+         char system_name[256];
+
+         snprintf(crc32_buf, sizeof(crc32_buf),
+               "%08lX", (unsigned long)crc);
+         crc32_str = crc32_buf;
+
+         /* Use cached system_name or query RDB */
+         if (cached && !string_is_empty(cached->system_name))
+         {
+            snprintf(db_name_buf, sizeof(db_name_buf),
+                  "%s.lpl", cached->system_name);
+            db_name_str = db_name_buf;
+         }
+         else if (streamlined_query_rdb_for_crc(core_info,
+               config_get_ptr()->paths.path_content_database,
+               crc, canonical, sizeof(canonical),
+               system_name, sizeof(system_name)))
+         {
+            if (!string_is_empty(system_name))
+            {
+               snprintf(db_name_buf, sizeof(db_name_buf),
+                     "%s.lpl", system_name);
+               db_name_str = db_name_buf;
+            }
+
+            /* Cache the result for artwork and future lookups */
+            if (filename && !cached)
+               streamlined_artwork_cache_add(&strm->artwork.cache,
+                     filename, crc, canonical, system_name);
+         }
+      }
+   }
+
+   /* Build string list for CMD_EVENT_ADD_TO_FAVORITES */
+   attr.i = 0;
+   str_list = string_list_new();
+   if (!str_list)
+      return;
+
+   string_list_append(str_list,
+         glo->data.game_list_options.item_path, attr);   /* [0] content_path */
+   string_list_append(str_list,
+         glo->data.game_list_options.item_label, attr);  /* [1] content_label */
+   string_list_append(str_list,
+         glo->data.game_list_options.core_path, attr);   /* [2] core_path */
+   string_list_append(str_list, core_name, attr);         /* [3] core_name */
+   string_list_append(str_list, crc32_str, attr);         /* [4] crc32 */
+   string_list_append(str_list, db_name_str, attr);       /* [5] db_name */
+
+   command_event(CMD_EVENT_ADD_TO_FAVORITES, (void*)str_list);
+   string_list_free(str_list);
+
+   /* Pop GLO and return to source view */
+   menu_st = menu_state_get_ptr();
+   streamlined_glo_pop_to_source(strm, menu_st);
 }
 
 /*
@@ -4927,6 +5159,24 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
       }
    }
 
+   /* "Add to Favorites" — available when game has a core, source is not FAVORITES */
+   if (view && !string_is_empty(view->data.game_list_options.core_path))
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_GAME_SWITCHER
+            || src == STREAMLINED_VIEW_HISTORY
+            || src == STREAMLINED_VIEW_PLAYLIST
+            || src == STREAMLINED_VIEW_FOLDER)
+      {
+         menu_entries_append(list,
+               "Add to Favorites",
+               "glo_add_to_favorites",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
    /* "Remove from History" — available when source is GAME_SWITCHER or HISTORY */
    if (view)
    {
@@ -6891,6 +7141,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   "glo_random_game"))
                streamlined_glo_random_game(strm);
             else if (string_is_equal(sel_entry.label,
+                  "glo_add_to_favorites"))
+               streamlined_glo_add_to_favorites(strm);
+            else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_history"))
                streamlined_glo_confirm_remove(strm);
             else if (string_is_equal(sel_entry.label,
@@ -6904,44 +7157,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          }
          if (action == MENU_ACTION_CANCEL)
          {
-            streamlined_view_pop(&strm->view_stack);
-            view = streamlined_view_current(&strm->view_stack);
-            if (view)
-            {
-               switch (view->type)
-               {
-                  case STREAMLINED_VIEW_MAIN_MENU:
-                     streamlined_pop_nav_marker();
-                     streamlined_populate_folder_menu(strm,
-                           view->data.main_menu.folder_path, false);
-                     break;
-                  case STREAMLINED_VIEW_FOLDER:
-                     streamlined_populate_folder_menu(strm,
-                           view->data.folder.folder_path, true);
-                     break;
-                  case STREAMLINED_VIEW_HISTORY:
-                     streamlined_populate_playlist_view(strm,
-                           g_defaults.content_history, "No history");
-                     break;
-                  case STREAMLINED_VIEW_FAVORITES:
-                     streamlined_populate_playlist_view(strm,
-                           g_defaults.content_favorites, "No favorites");
-                     break;
-                  case STREAMLINED_VIEW_PLAYLIST:
-                     streamlined_populate_playlist_view(strm,
-                           strm->user_playlist, "No games in playlist");
-                     break;
-                  case STREAMLINED_VIEW_PLAYLISTS:
-                     streamlined_populate_playlists_list(strm);
-                     break;
-                  case STREAMLINED_VIEW_GAME_SWITCHER:
-                     /* Switcher manages its own rendering */
-                     break;
-                  default:
-                     break;
-               }
-               menu_st->selection_ptr = view->saved_selection;
-            }
+            streamlined_glo_pop_to_source(strm, menu_st);
             return 0;
          }
          /* Allow navigation (up/down) */
