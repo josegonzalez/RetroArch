@@ -45,6 +45,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <string/stdstring.h>
@@ -263,7 +264,8 @@ typedef enum
    STREAMLINED_VIEW_PLAYLISTS,      /* List of user playlists */
    STREAMLINED_VIEW_PLAYLIST,       /* Games within a specific playlist */
    STREAMLINED_VIEW_GAME_SWITCHER,  /* Game switcher carousel (history) */
-   STREAMLINED_VIEW_GAME_LIST_OPTIONS /* Context-sensitive options menu */
+   STREAMLINED_VIEW_GAME_LIST_OPTIONS, /* Context-sensitive options menu */
+   STREAMLINED_VIEW_RANDOM_PREVIEW    /* Random game preview before launch */
 } streamlined_view_type_t;
 
 /* Per-view data stored in a tagged union */
@@ -284,7 +286,18 @@ typedef struct
          char item_label[256];
          char core_path[PATH_MAX_LENGTH];
          size_t entry_idx;
+         size_t source_count;
       } game_list_options;
+      struct {
+         char content_path[PATH_MAX_LENGTH];
+         char core_path[PATH_MAX_LENGTH];
+         char display_name[256];
+         streamlined_view_type_t source_type;
+         size_t random_idx;
+         size_t source_count;
+         bool has_auto_save;
+         bool has_core;
+      } random_preview;
    } data;
 } streamlined_view_t;
 
@@ -428,6 +441,12 @@ static streamlined_view_t *streamlined_view_push(
 {
    if (stack->top >= STREAMLINED_VIEW_STACK_MAX - 1)
       return NULL;
+   /* Auto-save the current view's selection before pushing */
+   if (stack->top >= 0)
+   {
+      struct menu_state *menu_st = menu_state_get_ptr();
+      stack->entries[stack->top].saved_selection = menu_st->selection_ptr;
+   }
    stack->top++;
    memset(&stack->entries[stack->top], 0, sizeof(streamlined_view_t));
    stack->entries[stack->top].type = type;
@@ -530,6 +549,11 @@ static bool streamlined_resolve_playlist_artwork(
 /* Game list options forward declarations */
 static void streamlined_populate_game_list_options(streamlined_t *strm);
 static void streamlined_glo_launch_without_resume(streamlined_t *strm);
+static void streamlined_glo_random_game(streamlined_t *strm);
+static void streamlined_populate_random_preview(streamlined_t *strm);
+static void streamlined_populate_core_selection(
+      streamlined_t *strm, const char *content_path);
+static file_list_t *streamlined_get_and_clear_menu_list(void);
 
 /* Artwork forward declarations */
 static const char *streamlined_get_artwork_type_dir(unsigned artwork_type);
@@ -583,7 +607,17 @@ static void streamlined_game_switcher_load_thumbnail(
       streamlined_t *strm, size_t index);
 static void streamlined_game_switcher_get_display_name(
       size_t index, char *out, size_t out_size);
+static void streamlined_draw_fullscreen_preview(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height,
+      gfx_thumbnail_t *thumbnail,
+      const char *top_title, const char *footer_title,
+      const char *ok_key, const char *ok_str,
+      const char *extra_key, const char *extra_str);
 static void streamlined_draw_game_switcher(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height);
+static void streamlined_draw_random_preview(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
       unsigned video_width, unsigned video_height);
 static void streamlined_game_switcher_launch(streamlined_t *strm);
@@ -2270,21 +2304,30 @@ static void streamlined_game_switcher_select(streamlined_t *strm, size_t index)
    streamlined_game_switcher_load_thumbnail(strm, index);
 }
 
-static void streamlined_draw_game_switcher(streamlined_t *strm,
+/*
+ * Shared full-screen preview layout used by Game Switcher and Random Game.
+ * Draws: dark overlay, optional top title, centered thumbnail, footer with
+ * [B] Back, centered footer_title, right-side button(s).
+ */
+static void streamlined_draw_fullscreen_preview(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
-      unsigned video_width, unsigned video_height)
+      unsigned video_width, unsigned video_height,
+      gfx_thumbnail_t *thumbnail,
+      const char *top_title, const char *footer_title,
+      const char *ok_key, const char *ok_str,
+      const char *extra_key, const char *extra_str)
 {
-   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
    float scale = strm->scale_factor;
 
    int thumb_max_height = (int)(video_height * STREAMLINED_SWITCHER_THUMB_HEIGHT_RATIO);
    int thumb_max_width  = (int)(thumb_max_height * STREAMLINED_THUMB_ASPECT_RATIO);
    int frame_border     = (int)(STREAMLINED_FRAME_BORDER_BASE * scale);
-   int frame_chin       = frame_border;  /* Uniform border — no dot indicators */
+   int frame_chin       = frame_border;
    int frame_width      = thumb_max_width + frame_border * 2;
    int frame_height     = thumb_max_height + frame_border + frame_chin;
 
    int frame_x, frame_y;
+   int top_area = 0;
 
    /* Footer layout */
    float footer_height  = STREAMLINED_FOOTER_HEIGHT_BASE * scale;
@@ -2296,9 +2339,6 @@ static void streamlined_draw_game_switcher(streamlined_t *strm,
    float pill_y         = footer_center_y - (pill_h / 2.0f);
    float text_y         = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_VCENTER);
 
-   if (!view)
-      return;
-
    /* Dark overlay */
    gfx_display_draw_quad(p_disp, userdata,
          video_width, video_height,
@@ -2306,39 +2346,56 @@ static void streamlined_draw_game_switcher(streamlined_t *strm,
          video_width, video_height,
          streamlined_color_bg, NULL);
 
-   /* Center the frame horizontally, offset upward to leave room for footer */
-   frame_x = ((int)video_width - frame_width) / 2;
-   frame_y = ((int)video_height - frame_height - (int)footer_height) / 2;
+   /* Optional top title */
+   if (top_title)
+   {
+      font_data_t *title_font = strm->font_title.font
+            ? strm->font_title.font : strm->font.font;
+      int title_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
+      int title_w = font_driver_get_message_width(title_font,
+            top_title, strlen(top_title), 1.0f);
+      int title_x = ((int)video_width - title_w) / 2;
 
-   /* Draw thumbnail in polaroid frame if available, otherwise show placeholder text */
-   if (strm->game_switcher_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+      gfx_display_draw_text(title_font,
+            top_title, title_x, title_y,
+            video_width, video_height,
+            streamlined_color_text,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+      top_area = strm->margin_y
+            + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_RATIO);
+   }
+
+   /* Center frame, accounting for top title area and footer */
+   frame_x = ((int)video_width - frame_width) / 2;
+   frame_y = top_area
+         + ((int)video_height - top_area - frame_height - (int)footer_height) / 2;
+
+   /* Draw thumbnail or placeholder */
+   if (thumbnail && thumbnail->status == GFX_THUMBNAIL_STATUS_AVAILABLE)
    {
       streamlined_draw_thumbnail_frame(strm, p_disp, userdata,
             video_width, video_height,
             frame_x, frame_y, thumb_max_width, thumb_max_height,
             frame_border, frame_chin,
-            &strm->game_switcher_thumbnail, NULL);
+            thumbnail, NULL);
    }
-   else if (strm->game_switcher_thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN)
+   else if (!thumbnail || thumbnail->status != GFX_THUMBNAIL_STATUS_UNKNOWN)
    {
-      /* No image — show centered placeholder text on dark background */
       const char *placeholder = "No Image Available";
-      int text_width = streamlined_get_text_width(strm, placeholder, false);
-      int center_x = ((int)video_width - text_width) / 2;
-      int center_y = frame_y + frame_height / 2
+      int pw = streamlined_get_text_width(strm, placeholder, false);
+      int px = ((int)video_width - pw) / 2;
+      int py = frame_y + frame_height / 2
             + (int)(strm->font_size * STREAMLINED_TEXT_VCENTER);
 
       streamlined_draw_text(strm, p_disp, video_width, video_height,
-            center_x, center_y,
-            placeholder, streamlined_color_text_muted, false);
+            px, py, placeholder, streamlined_color_text_muted, false);
    }
 
-   /* Footer: [B] Back ... title ... [A] Play */
+   /* Footer */
    {
       float ok_pill_x;
       int ok_key_w, ok_label_w, ok_pill_w;
-      float title_center_x;
-      int title_w;
 
       /* Left: [B] Back */
       streamlined_draw_footer_pill(strm, p_disp, userdata,
@@ -2346,11 +2403,11 @@ static void streamlined_draw_game_switcher(streamlined_t *strm,
             footer_margin, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
             "B", "Back");
 
-      /* Right: [A] Play */
+      /* Right: OK button */
       ok_key_w   = font_driver_get_message_width(
-            strm->font_small.font, "A", 1, 1.0f);
+            strm->font_small.font, ok_key, strlen(ok_key), 1.0f);
       ok_label_w = font_driver_get_message_width(
-            strm->font_small.font, "Play", 4, 1.0f);
+            strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
       ok_pill_w  = ok_key_w + (int)(pill_pad * 2.0f);
       ok_pill_x  = (float)video_width - footer_margin
             - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
@@ -2358,27 +2415,97 @@ static void streamlined_draw_game_switcher(streamlined_t *strm,
       streamlined_draw_footer_pill(strm, p_disp, userdata,
             video_width, video_height,
             ok_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
-            "A", "Play");
+            ok_key, ok_str);
 
-      /* Center: game title */
-      if (view->data.game_switcher.title[0] != '\0')
+      /* Optional extra button (e.g. [X] Resume) to the left of OK */
+      if (extra_key && extra_str)
       {
-         font_data_t *title_font = strm->font_title.font
-               ? strm->font_title.font : strm->font.font;
-         title_center_x = (float)video_width / 2.0f;
-         title_w = font_driver_get_message_width(title_font,
-               view->data.game_switcher.title,
-               strlen(view->data.game_switcher.title), 1.0f);
+         int ex_key_w   = font_driver_get_message_width(
+               strm->font_small.font, extra_key, strlen(extra_key), 1.0f);
+         int ex_label_w = font_driver_get_message_width(
+               strm->font_small.font, extra_str, strlen(extra_str), 1.0f);
+         int ex_pill_w  = ex_key_w + (int)(pill_pad * 2.0f);
+         float ex_pill_x = ok_pill_x - pill_text_gap
+               - (float)ex_label_w - pill_text_gap - (float)ex_pill_w;
 
-         gfx_display_draw_text(title_font,
-               view->data.game_switcher.title,
-               (int)(title_center_x - (float)title_w / 2.0f),
-               (int)text_y,
+         streamlined_draw_footer_pill(strm, p_disp, userdata,
+               video_width, video_height,
+               ex_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+               extra_key, extra_str);
+      }
+
+      /* Center: footer title */
+      if (footer_title && footer_title[0] != '\0')
+      {
+         font_data_t *ft = strm->font_title.font
+               ? strm->font_title.font : strm->font.font;
+         int ft_w = font_driver_get_message_width(ft,
+               footer_title, strlen(footer_title), 1.0f);
+         float ft_x = ((float)video_width - (float)ft_w) / 2.0f;
+
+         gfx_display_draw_text(ft,
+               footer_title, (int)ft_x, (int)text_y,
                video_width, video_height,
                streamlined_color_text,
                TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
       }
    }
+}
+
+static void streamlined_draw_game_switcher(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   if (!view)
+      return;
+
+   streamlined_draw_fullscreen_preview(strm, p_disp, userdata,
+         video_width, video_height,
+         &strm->game_switcher_thumbnail,
+         NULL,
+         view->data.game_switcher.title,
+         "A", "Play",
+         NULL, NULL);
+}
+
+static void streamlined_draw_random_preview(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   settings_t *settings;
+   const char *extra_key = NULL;
+   const char *extra_str = NULL;
+   const char *ok_key    = "A";
+   const char *ok_str    = "Play";
+
+   if (!view)
+      return;
+
+   settings = config_get_ptr();
+
+   if (view->data.random_preview.has_auto_save)
+   {
+      if (settings->bools.savestate_auto_load)
+      {
+         ok_key = "X";
+         ok_str = "Resume";
+      }
+      else
+      {
+         extra_key = "X";
+         extra_str = "Resume";
+      }
+   }
+
+   streamlined_draw_fullscreen_preview(strm, p_disp, userdata,
+         video_width, video_height,
+         &strm->artwork.thumbnail,
+         "Random Game",
+         view->data.random_preview.display_name,
+         ok_key, ok_str,
+         extra_key, extra_str);
 }
 
 static void streamlined_game_switcher_launch(streamlined_t *strm)
@@ -2473,6 +2600,327 @@ static void streamlined_glo_launch_without_resume(streamlined_t *strm)
    strm->loading_skip_auto_load = true;
    streamlined_request_loading(strm, glo->data.game_list_options.core_path,
          content_path, false);
+}
+
+/*
+ * GLO action: pick a random game and push a preview view.
+ * The preview view lets the user accept (A/X) or decline (B) the pick.
+ */
+static void streamlined_glo_random_game(streamlined_t *strm)
+{
+   streamlined_view_t *glo;
+   streamlined_view_type_t source_type;
+   size_t source_count;
+   char content_path[PATH_MAX_LENGTH];
+   char core_path[PATH_MAX_LENGTH];
+   char display_name[256];
+   size_t random_idx = 0;
+   bool found_core   = false;
+   bool found_game   = false;
+   struct menu_state *menu_st = menu_state_get_ptr();
+
+   glo = streamlined_view_current(&strm->view_stack);
+   if (!glo || glo->type != STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+      return;
+
+   source_type  = glo->data.game_list_options.source_type;
+   source_count = glo->data.game_list_options.source_count;
+
+   /* Seed RNG with wall-clock time for varied results */
+   srand((unsigned)time(NULL));
+
+   /* Peek at the source view below GLO (don't pop — RANDOM_PREVIEW goes on top) */
+   content_path[0] = '\0';
+   core_path[0]    = '\0';
+   display_name[0] = '\0';
+
+   if (source_type == STREAMLINED_VIEW_FOLDER)
+   {
+      /* Scan directory and pick a random playable file */
+      streamlined_view_t *source_view = (strm->view_stack.top > 0)
+            ? &strm->view_stack.entries[strm->view_stack.top - 1] : NULL;
+      settings_t *settings       = config_get_ptr();
+      const char *folder_path    = source_view ? source_view->data.folder.folder_path : NULL;
+      const char *folder_core    = source_view ? source_view->data.folder.core_path : NULL;
+      struct string_list *str_list;
+      size_t *playable           = NULL;
+      size_t playable_count      = 0;
+      unsigned j;
+      int attempts;
+
+      if (!folder_path)
+         return;
+
+      str_list = dir_list_new(folder_path, NULL, true,
+            settings->bools.show_hidden_files, true, false);
+      if (!str_list || str_list->size == 0)
+      {
+         if (str_list)
+            string_list_free(str_list);
+         return;
+      }
+
+      /* Build array of indices for playable entries (files + m3u folders) */
+      playable = (size_t *)calloc(str_list->size, sizeof(size_t));
+      if (!playable)
+      {
+         string_list_free(str_list);
+         return;
+      }
+
+      for (j = 0; j < str_list->size; j++)
+      {
+         const char *path = str_list->elems[j].data;
+         unsigned attr     = str_list->elems[j].attr.i;
+         const char *name  = path_basename(path);
+
+         if (!name || name[0] == '.')
+            continue;
+
+         if (attr == RARCH_DIRECTORY)
+         {
+            char m3u_path[PATH_MAX_LENGTH];
+            if (streamlined_detect_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+               playable[playable_count++] = j;
+         }
+         else
+            playable[playable_count++] = j;
+      }
+
+      if (playable_count < 2)
+      {
+         free(playable);
+         string_list_free(str_list);
+         return;
+      }
+
+      /* Try random picks until we find a valid game */
+      for (attempts = 0; attempts < 10; attempts++)
+      {
+         size_t pick_idx   = playable[rand() % playable_count];
+         const char *path  = str_list->elems[pick_idx].data;
+         unsigned attr     = str_list->elems[pick_idx].attr.i;
+         char candidate[PATH_MAX_LENGTH];
+         const char *base_name;
+
+         if (attr == RARCH_DIRECTORY)
+         {
+            char m3u_path[PATH_MAX_LENGTH];
+            if (!streamlined_detect_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+               continue;
+            strlcpy(candidate, m3u_path, sizeof(candidate));
+         }
+         else
+            strlcpy(candidate, path, sizeof(candidate));
+
+         /* Try to resolve core */
+         if (streamlined_resolve_core_for_content(candidate,
+               folder_core, core_path, sizeof(core_path))
+               && path_is_valid(core_path))
+            found_core = true;
+         else
+            core_path[0] = '\0';
+
+         strlcpy(content_path, candidate, sizeof(content_path));
+         random_idx = pick_idx;
+         found_game = true;
+
+         /* Build display name from filename */
+         base_name = path_basename(content_path);
+         if (base_name)
+         {
+            const char *clean = streamlined_strip_sort_prefix(base_name);
+            strlcpy(display_name, clean, sizeof(display_name));
+            path_remove_extension(display_name);
+         }
+         break;
+      }
+
+      free(playable);
+      string_list_free(str_list);
+   }
+   else
+   {
+      /* Playlist-backed views: HISTORY, FAVORITES, PLAYLIST, GAME_SWITCHER */
+      playlist_t *playlist = NULL;
+      size_t pl_size;
+      int attempts;
+
+      switch (source_type)
+      {
+         case STREAMLINED_VIEW_HISTORY:
+         case STREAMLINED_VIEW_GAME_SWITCHER:
+            playlist = g_defaults.content_history;
+            break;
+         case STREAMLINED_VIEW_FAVORITES:
+            playlist = g_defaults.content_favorites;
+            break;
+         case STREAMLINED_VIEW_PLAYLIST:
+            playlist = strm->user_playlist;
+            break;
+         default:
+            return;
+      }
+
+      if (!playlist)
+         return;
+      pl_size = playlist_size(playlist);
+      if (pl_size < 2)
+         return;
+
+      for (attempts = 0; attempts < 10; attempts++)
+      {
+         const struct playlist_entry *pl_entry = NULL;
+         char candidate[PATH_MAX_LENGTH];
+
+         random_idx = rand() % pl_size;
+         playlist_get_index(playlist, random_idx, &pl_entry);
+         if (!pl_entry || string_is_empty(pl_entry->path))
+            continue;
+
+         strlcpy(candidate, pl_entry->path, sizeof(candidate));
+         playlist_resolve_path(PLAYLIST_LOAD, false,
+               candidate, sizeof(candidate));
+
+         if (!path_is_valid(candidate))
+            continue;
+
+         strlcpy(content_path, candidate, sizeof(content_path));
+         found_game = true;
+
+         /* Try to resolve core directly from playlist entry */
+         if (playlist_entry_has_core(pl_entry))
+         {
+            strlcpy(core_path, pl_entry->core_path, sizeof(core_path));
+            playlist_resolve_path(PLAYLIST_LOAD, true,
+                  core_path, sizeof(core_path));
+            if (path_is_valid(core_path))
+               found_core = true;
+            else
+               core_path[0] = '\0';
+         }
+         else
+         {
+            /* Core is DETECT/empty — try .core.txt fallback */
+            if (streamlined_read_game_core(candidate,
+                     core_path, sizeof(core_path))
+                  && path_is_valid(core_path))
+               found_core = true;
+            else
+            {
+               char content_dir[DIR_MAX_LENGTH];
+               fill_pathname_basedir(content_dir, candidate,
+                     sizeof(content_dir));
+               if (streamlined_read_folder_core(content_dir,
+                        core_path, sizeof(core_path))
+                     && path_is_valid(core_path))
+                  found_core = true;
+               else
+                  core_path[0] = '\0';
+            }
+         }
+
+         /* Build display name from playlist entry */
+         if (!string_is_empty(pl_entry->label))
+            strlcpy(display_name, pl_entry->label, sizeof(display_name));
+         else
+         {
+            const char *base = path_basename(pl_entry->path);
+            if (base)
+            {
+               strlcpy(display_name, base, sizeof(display_name));
+               path_remove_extension(display_name);
+            }
+         }
+         break;
+      }
+   }
+
+   if (!found_game)
+      return;
+
+   /* Push RANDOM_PREVIEW view */
+   {
+      streamlined_view_t *preview = streamlined_view_push(
+            &strm->view_stack, STREAMLINED_VIEW_RANDOM_PREVIEW);
+      if (!preview)
+         return;
+
+      strlcpy(preview->data.random_preview.content_path, content_path,
+            sizeof(preview->data.random_preview.content_path));
+      strlcpy(preview->data.random_preview.core_path, core_path,
+            sizeof(preview->data.random_preview.core_path));
+      strlcpy(preview->data.random_preview.display_name, display_name,
+            sizeof(preview->data.random_preview.display_name));
+      preview->data.random_preview.source_type  = source_type;
+      preview->data.random_preview.random_idx   = random_idx;
+      preview->data.random_preview.source_count = source_count;
+      preview->data.random_preview.has_core     = found_core;
+
+      /* Compute has_auto_save */
+      preview->data.random_preview.has_auto_save = false;
+      if (found_core)
+      {
+         char auto_state_path[PATH_MAX_LENGTH];
+         char actual_content[PATH_MAX_LENGTH];
+
+         if (!streamlined_resolve_m3u_content(content_path, core_path,
+                  actual_content, sizeof(actual_content)))
+            strlcpy(actual_content, content_path, sizeof(actual_content));
+
+         if (streamlined_get_auto_savestate_path(actual_content, core_path,
+                  auto_state_path, sizeof(auto_state_path)))
+            preview->data.random_preview.has_auto_save =
+                  path_is_valid(auto_state_path);
+      }
+
+      /* Load artwork for the preview */
+      {
+         settings_t *settings = config_get_ptr();
+         streamlined_artwork_t *art = &strm->artwork;
+         char artwork_path[PATH_MAX_LENGTH];
+         bool found_art = false;
+
+         gfx_thumbnail_reset(&art->thumbnail);
+         art->thumbnail_path[0] = '\0';
+
+         if (settings->uints.streamlined_artwork_type != 0
+               && !string_is_empty(core_path))
+         {
+            found_art = streamlined_resolve_artwork_path(art,
+                  display_name, content_path, core_path,
+                  artwork_path, sizeof(artwork_path));
+         }
+
+         if (found_art && !string_is_empty(artwork_path))
+         {
+            strlcpy(art->thumbnail_path, artwork_path,
+                  sizeof(art->thumbnail_path));
+            gfx_thumbnail_request_file(artwork_path, &art->thumbnail, NULL);
+         }
+         else
+            art->thumbnail.status = GFX_THUMBNAIL_STATUS_MISSING;
+      }
+
+      streamlined_populate_random_preview(strm);
+      menu_st->selection_ptr = 0;
+   }
+}
+
+static void streamlined_populate_random_preview(streamlined_t *strm)
+{
+   file_list_t *list = streamlined_get_and_clear_menu_list();
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+
+   if (!list || !view)
+      return;
+
+   menu_entries_append(list,
+         view->data.random_preview.display_name,
+         view->data.random_preview.content_path,
+         MSG_UNKNOWN,
+         FILE_TYPE_PLAIN,
+         0, 0, NULL);
 }
 
 static void streamlined_game_switcher_remove(streamlined_t *strm)
@@ -2682,6 +3130,11 @@ static void streamlined_render_menu(streamlined_t *strm,
       case STREAMLINED_VIEW_GAME_LIST_OPTIONS:
          strlcpy(title_buf, "Options", sizeof(title_buf));
          break;
+      case STREAMLINED_VIEW_RANDOM_PREVIEW:
+         /* Random preview draws its own full-screen UI */
+         streamlined_draw_random_preview(strm, p_disp, userdata,
+               video_width, video_height);
+         return;
       case STREAMLINED_VIEW_ADVANCED:
          strlcpy(title_buf, "Advanced", sizeof(title_buf));
          break;
@@ -4380,6 +4833,25 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
       }
    }
 
+   /* "Random Game" — available when the source list has 2+ games */
+   if (view && view->data.game_list_options.source_count >= 2)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_GAME_SWITCHER
+            || src == STREAMLINED_VIEW_HISTORY
+            || src == STREAMLINED_VIEW_FAVORITES
+            || src == STREAMLINED_VIEW_PLAYLIST
+            || src == STREAMLINED_VIEW_FOLDER)
+      {
+         menu_entries_append(list,
+               "Random Game",
+               "glo_random_game",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
    if (list->size == 0)
    {
       menu_entries_append(list,
@@ -5112,6 +5584,10 @@ static void streamlined_populate_entries(void *data,
          {
             streamlined_populate_game_list_options(strm);
          }
+         else if (view && view->type == STREAMLINED_VIEW_RANDOM_PREVIEW)
+         {
+            streamlined_populate_random_preview(strm);
+         }
          else
          {
             /* Fresh main menu - reset stack */
@@ -5430,7 +5906,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       {
          streamlined_view_t *gsv;
          bool from_main = (view->type == STREAMLINED_VIEW_MAIN_MENU);
-         view->saved_selection = menu_st->selection_ptr;
+
          gsv = streamlined_view_push(&strm->view_stack,
                STREAMLINED_VIEW_GAME_SWITCHER);
          if (gsv)
@@ -5505,7 +5981,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             /* Select "Advanced": push ADVANCED view */
             if (entry_label && string_is_equal(entry_label, "Advanced"))
             {
-               view->saved_selection = menu_st->selection_ptr;
+      
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_ADVANCED);
                streamlined_populate_settings_submenu();
                menu_st->selection_ptr = 0;
@@ -5547,7 +6023,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* OK: entering an RA settings screen */
          if (action == MENU_ACTION_OK)
          {
-            view->saved_selection = menu_st->selection_ptr;
+   
             streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_RA_SETTINGS);
          }
          break;
@@ -5573,6 +6049,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      strm->user_playlist, "No games in playlist");
             else if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
                streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+            else if (view && view->type == STREAMLINED_VIEW_RANDOM_PREVIEW)
+               streamlined_populate_random_preview(strm);
             if (view)
                menu_st->selection_ptr = view->saved_selection;
             return 0;
@@ -5626,7 +6104,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             /* Settings entry */
             if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS)
             {
-               view->saved_selection = menu_st->selection_ptr;
+      
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_SETTINGS);
                streamlined_push_nav_marker();
                streamlined_populate_main_settings_submenu();
@@ -5637,7 +6115,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             /* History entry */
             if (entry->enum_idx == MENU_ENUM_LABEL_HISTORY_TAB)
             {
-               view->saved_selection = menu_st->selection_ptr;
+      
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_HISTORY);
                streamlined_push_nav_marker();
                streamlined_populate_playlist_view(strm,
@@ -5650,7 +6128,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             /* Favorites entry */
             if (entry->enum_idx == MENU_ENUM_LABEL_FAVORITES_TAB)
             {
-               view->saved_selection = menu_st->selection_ptr;
+      
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FAVORITES);
                streamlined_push_nav_marker();
                streamlined_populate_playlist_view(strm,
@@ -5663,7 +6141,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             /* Playlists entry */
             if (entry->enum_idx == MENU_ENUM_LABEL_PLAYLISTS_TAB)
             {
-               view->saved_selection = menu_st->selection_ptr;
+      
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_PLAYLISTS);
                streamlined_push_nav_marker();
                streamlined_populate_playlists_list(strm);
@@ -5679,7 +6157,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   if (path_is_directory(item_path))
                   {
                      streamlined_view_t *v;
-                     view->saved_selection = menu_st->selection_ptr;
+            
                      v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
                      if (v)
                      {
@@ -5741,7 +6219,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      /* No core resolved - show core selection */
                      {
                         streamlined_view_t *v;
-                        view->saved_selection = menu_st->selection_ptr;
+               
                         v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
                         if (v)
                            strlcpy(v->data.core_select.content_path, item_path,
@@ -5760,7 +6238,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (action == MENU_ACTION_SEARCH && entry)
          {
             streamlined_view_t *glo;
-            view->saved_selection = menu_st->selection_ptr;
+   
             glo = streamlined_view_push(&strm->view_stack,
                   STREAMLINED_VIEW_GAME_LIST_OPTIONS);
             if (glo)
@@ -5777,6 +6255,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         sizeof(glo->data.game_list_options.item_label));
                glo->data.game_list_options.entry_idx = entry->entry_idx;
                glo->data.game_list_options.core_path[0] = '\0';
+               glo->data.game_list_options.source_count = 0;
                streamlined_push_nav_marker();
                streamlined_populate_game_list_options(strm);
                menu_st->selection_ptr = 0;
@@ -5850,7 +6329,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                {
                   /* Enter subfolder - push new FOLDER view */
                   streamlined_view_t *v;
-                  view->saved_selection = menu_st->selection_ptr;
+         
                   v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
                   if (v)
                   {
@@ -5891,7 +6370,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      {
                         /* No core resolved - show core selection */
                         streamlined_view_t *v;
-                        view->saved_selection = menu_st->selection_ptr;
+               
                         v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
                         if (v)
                            strlcpy(v->data.core_select.content_path, item_path,
@@ -5935,6 +6414,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             streamlined_view_t *glo;
             char glo_core[PATH_MAX_LENGTH];
             bool has_core = false;
+            file_list_t *cur_list = MENU_LIST_GET_SELECTION(
+                  menu_st->entries.list, 0);
+            size_t game_count = cur_list ? cur_list->size : 0;
 
             /* Resolve core before push (source view is still current) */
             if (!string_is_empty(entry->label)
@@ -5943,7 +6425,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      entry->label, entry->entry_idx,
                      glo_core, sizeof(glo_core));
 
-            view->saved_selection = menu_st->selection_ptr;
+   
             glo = streamlined_view_push(&strm->view_stack,
                   STREAMLINED_VIEW_GAME_LIST_OPTIONS);
             if (glo)
@@ -5958,6 +6440,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         entry->path,
                         sizeof(glo->data.game_list_options.item_label));
                glo->data.game_list_options.entry_idx = entry->entry_idx;
+               glo->data.game_list_options.source_count = game_count;
                if (has_core)
                   strlcpy(glo->data.game_list_options.core_path,
                         glo_core,
@@ -5997,7 +6480,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* OK: entering RA settings */
          if (action == MENU_ACTION_OK)
          {
-            view->saved_selection = menu_st->selection_ptr;
+   
             streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_RA_SETTINGS);
             streamlined_pop_nav_marker();  /* Remove marker before RA pushes its entries */
             return generic_menu_entry_action(userdata, entry, i, action);
@@ -6034,7 +6517,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                if (!streamlined_load_user_playlist(strm, playlist_path))
                   return 0;
 
-               view->saved_selection = menu_st->selection_ptr;
+      
                v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_PLAYLIST);
                if (v)
                   strlcpy(v->data.playlist.playlist_path, playlist_path,
@@ -6051,7 +6534,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (action == MENU_ACTION_SEARCH && entry)
          {
             streamlined_view_t *glo;
-            view->saved_selection = menu_st->selection_ptr;
+   
             glo = streamlined_view_push(&strm->view_stack,
                   STREAMLINED_VIEW_GAME_LIST_OPTIONS);
             if (glo)
@@ -6145,6 +6628,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                glo->data.game_list_options.source_type =
                      STREAMLINED_VIEW_GAME_SWITCHER;
                glo->data.game_list_options.entry_idx = idx;
+               glo->data.game_list_options.source_count = count;
 
                if (pl_entry)
                {
@@ -6202,6 +6686,94 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          return 0;  /* Block all other input */
       }
 
+      case STREAMLINED_VIEW_RANDOM_PREVIEW:
+      {
+         /* A button: launch the random game */
+         if (action == MENU_ACTION_OK)
+         {
+            if (view->data.random_preview.has_core)
+            {
+               settings_t *settings = config_get_ptr();
+               streamlined_view_type_t src = view->data.random_preview.source_type;
+               size_t idx = view->data.random_preview.random_idx;
+
+               /* Set resume state before launch */
+               if (src == STREAMLINED_VIEW_GAME_SWITCHER)
+               {
+                  streamlined_game_switcher_reset_thumbnail(strm);
+                  strm->resume.active         = true;
+                  strm->resume.source         = STREAMLINED_RESUME_HISTORY;
+                  strm->resume.folder_path[0] = '\0';
+                  strm->resume.selection      = idx;
+                  strm->view_stack.top = -1;
+               }
+
+               streamlined_request_loading(strm,
+                     view->data.random_preview.core_path,
+                     view->data.random_preview.content_path,
+                     view->data.random_preview.has_auto_save
+                           && settings->bools.savestate_auto_load);
+            }
+            else
+            {
+               /* No core — push core selection */
+               streamlined_view_t *v = streamlined_view_push(
+                     &strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
+               if (v)
+                  strlcpy(v->data.core_select.content_path,
+                        view->data.random_preview.content_path,
+                        sizeof(v->data.core_select.content_path));
+               streamlined_populate_core_selection(strm,
+                     view->data.random_preview.content_path);
+               menu_st->selection_ptr = 0;
+            }
+            return 0;
+         }
+
+         /* X button: resume the random game (force auto-save load) */
+         if (action == MENU_ACTION_SCAN)
+         {
+            if (view->data.random_preview.has_auto_save
+                  && view->data.random_preview.has_core)
+            {
+               streamlined_view_type_t src = view->data.random_preview.source_type;
+               size_t idx = view->data.random_preview.random_idx;
+
+               if (src == STREAMLINED_VIEW_GAME_SWITCHER)
+               {
+                  streamlined_game_switcher_reset_thumbnail(strm);
+                  strm->resume.active         = true;
+                  strm->resume.source         = STREAMLINED_RESUME_HISTORY;
+                  strm->resume.folder_path[0] = '\0';
+                  strm->resume.selection      = idx;
+                  strm->view_stack.top = -1;
+               }
+
+               streamlined_request_loading(strm,
+                     view->data.random_preview.core_path,
+                     view->data.random_preview.content_path,
+                     true);
+            }
+            return 0;
+         }
+
+         /* B button: go back to GLO */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_artwork_reset(&strm->artwork);
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+            {
+               streamlined_populate_game_list_options(strm);
+               menu_st->selection_ptr = view->saved_selection;
+            }
+            return 0;
+         }
+
+         return 0;  /* Block all other input */
+      }
+
       case STREAMLINED_VIEW_GAME_LIST_OPTIONS:
       {
          if (action == MENU_ACTION_OK)
@@ -6212,9 +6784,14 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             menu_entry_get(&sel_entry, 0,
                   (unsigned)menu_st->selection_ptr, NULL, true);
 
+   
+
             if (string_is_equal(sel_entry.label,
                   "glo_start_without_resume"))
                streamlined_glo_launch_without_resume(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_random_game"))
+               streamlined_glo_random_game(strm);
 
             return 0;
          }
@@ -6260,6 +6837,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             }
             return 0;
          }
+         /* Allow navigation (up/down) */
+         if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+               || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+            return generic_menu_entry_action(userdata, entry, i, action);
          return 0;  /* Block all other input */
       }
 

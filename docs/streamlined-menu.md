@@ -82,6 +82,7 @@ Press **Y** while browsing the main screen, a folder, History, Favorites, Playli
 When you have a game highlighted — in a folder, History, Favorites, a playlist, or the Game Switcher — the Options menu will show:
 
 - **Start Without Resume** - Starts the game fresh without loading your saved progress
+- **Random Game** - Opens a preview of a randomly picked game from the current list. You will see the game's name and artwork. Press **A** to play, **X** to resume from where you left off (if you have saved progress), or **B** to go back. This option only appears when there are at least two games in the list. If the folder does not have a core set up yet, you will be asked to pick one before the game starts.
 
 Press **B** to close the Options menu and go back to what you were doing before.
 
