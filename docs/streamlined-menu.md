@@ -75,6 +75,12 @@ If you are already playing a game and auto-save is turned on in settings, your c
 
 The Game Switcher only appears if you have played at least one game (your play history is not empty).
 
+## Options Menu
+
+Press **Y** while browsing the main screen, a folder, History, Favorites, Playlists, a specific playlist, or the Game Switcher to open the Options menu. The Options menu shows actions you can perform on the highlighted item.
+
+Press **B** to close the Options menu and go back to what you were doing before.
+
 ## The Quick Menu (Pause Menu)
 
 While playing a game, open the menu to see the Quick Menu. The title at the top shows the name of the game you are playing. You will see these options:
@@ -146,6 +152,7 @@ Here is a quick summary of the controls:
 | **Up / Down** | Move through the list |
 | **A / OK** | Select the highlighted item (shows "Play" when a game is highlighted) |
 | **X / Resume** | Resume a game from where you left off (when available) |
+| **Y / Options** | Open the Options menu for the highlighted item |
 | **B / Back** | Go back to the previous screen |
 | **Left / Right** | Switch save slots (when on Save or Load), navigate the Game Switcher |
 | **Select** | Open the Game Switcher (when you have play history) |
