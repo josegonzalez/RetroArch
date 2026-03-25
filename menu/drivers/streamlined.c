@@ -265,7 +265,8 @@ typedef enum
    STREAMLINED_VIEW_PLAYLIST,       /* Games within a specific playlist */
    STREAMLINED_VIEW_GAME_SWITCHER,  /* Game switcher carousel (history) */
    STREAMLINED_VIEW_GAME_LIST_OPTIONS, /* Context-sensitive options menu */
-   STREAMLINED_VIEW_RANDOM_PREVIEW    /* Random game preview before launch */
+   STREAMLINED_VIEW_RANDOM_PREVIEW,   /* Random game preview before launch */
+   STREAMLINED_VIEW_CONFIRM_REMOVE    /* Confirmation before removing from history */
 } streamlined_view_type_t;
 
 /* Per-view data stored in a tagged union */
@@ -298,6 +299,11 @@ typedef struct
          bool has_auto_save;
          bool has_core;
       } random_preview;
+      struct {
+         size_t history_idx;
+         streamlined_view_type_t source_type;
+         char item_label[256];
+      } confirm_remove;
    } data;
 } streamlined_view_t;
 
@@ -450,6 +456,11 @@ static streamlined_view_t *streamlined_view_push(
    stack->top++;
    memset(&stack->entries[stack->top], 0, sizeof(streamlined_view_t));
    stack->entries[stack->top].type = type;
+   {
+      struct menu_state *ms = menu_state_get_ptr();
+      if (ms)
+         ms->selection_ptr = 0;
+   }
    return &stack->entries[stack->top];
 }
 
@@ -551,6 +562,8 @@ static void streamlined_populate_game_list_options(streamlined_t *strm);
 static void streamlined_glo_launch_without_resume(streamlined_t *strm);
 static void streamlined_glo_random_game(streamlined_t *strm);
 static void streamlined_populate_random_preview(streamlined_t *strm);
+static void streamlined_glo_remove_from_history(streamlined_t *strm);
+static void streamlined_populate_confirm_remove(streamlined_t *strm);
 static void streamlined_populate_core_selection(
       streamlined_t *strm, const char *content_path);
 static file_list_t *streamlined_get_and_clear_menu_list(void);
@@ -2603,6 +2616,32 @@ static void streamlined_glo_launch_without_resume(streamlined_t *strm)
 }
 
 /*
+ * GLO action: push confirmation view before removing from history.
+ */
+static void streamlined_glo_remove_from_history(streamlined_t *strm)
+{
+   streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
+   streamlined_view_t *confirm;
+
+   if (!glo || glo->type != STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+      return;
+
+   confirm = streamlined_view_push(&strm->view_stack,
+         STREAMLINED_VIEW_CONFIRM_REMOVE);
+   if (confirm)
+   {
+      confirm->data.confirm_remove.history_idx =
+            glo->data.game_list_options.entry_idx;
+      confirm->data.confirm_remove.source_type =
+            glo->data.game_list_options.source_type;
+      strlcpy(confirm->data.confirm_remove.item_label,
+            glo->data.game_list_options.item_label,
+            sizeof(confirm->data.confirm_remove.item_label));
+      streamlined_populate_confirm_remove(strm);
+   }
+}
+
+/*
  * GLO action: pick a random game and push a preview view.
  * The preview view lets the user accept (A/X) or decline (B) the pick.
  */
@@ -2903,7 +2942,6 @@ static void streamlined_glo_random_game(streamlined_t *strm)
       }
 
       streamlined_populate_random_preview(strm);
-      menu_st->selection_ptr = 0;
    }
 }
 
@@ -2920,6 +2958,28 @@ static void streamlined_populate_random_preview(streamlined_t *strm)
          view->data.random_preview.content_path,
          MSG_UNKNOWN,
          FILE_TYPE_PLAIN,
+         0, 0, NULL);
+}
+
+static void streamlined_populate_confirm_remove(streamlined_t *strm)
+{
+   file_list_t *list = streamlined_get_and_clear_menu_list();
+
+   if (!list)
+      return;
+
+   menu_entries_append(list,
+         "Remove",
+         "confirm_remove_yes",
+         MSG_UNKNOWN,
+         FILE_TYPE_NONE,
+         0, 0, NULL);
+
+   menu_entries_append(list,
+         "Cancel",
+         "confirm_remove_no",
+         MSG_UNKNOWN,
+         FILE_TYPE_NONE,
          0, 0, NULL);
 }
 
@@ -3130,6 +3190,9 @@ static void streamlined_render_menu(streamlined_t *strm,
       case STREAMLINED_VIEW_GAME_LIST_OPTIONS:
          strlcpy(title_buf, "Options", sizeof(title_buf));
          break;
+      case STREAMLINED_VIEW_CONFIRM_REMOVE:
+         strlcpy(title_buf, "Remove from History?", sizeof(title_buf));
+         break;
       case STREAMLINED_VIEW_RANDOM_PREVIEW:
          /* Random preview draws its own full-screen UI */
          streamlined_draw_random_preview(strm, p_disp, userdata,
@@ -3279,7 +3342,8 @@ static void streamlined_render_menu(streamlined_t *strm,
             || vtype == STREAMLINED_VIEW_ADVANCED
             || vtype == STREAMLINED_VIEW_CORE_SELECT
             || vtype == STREAMLINED_VIEW_MAIN_SETTINGS
-            || vtype == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+            || vtype == STREAMLINED_VIEW_GAME_LIST_OPTIONS
+            || vtype == STREAMLINED_VIEW_CONFIRM_REMOVE)
       {
          entry_label = entry.path;
          /* Core Options has empty path - use rich_label instead */
@@ -3475,7 +3539,8 @@ static void streamlined_render_menu(streamlined_t *strm,
          else
          {
             ok_key = "A";
-            if (vtype == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+            if (vtype == STREAMLINED_VIEW_GAME_LIST_OPTIONS
+                  || vtype == STREAMLINED_VIEW_CONFIRM_REMOVE)
                ok_str = "Select";
             else if ((vtype == STREAMLINED_VIEW_MAIN_MENU
                   || streamlined_is_game_view(vtype))
@@ -4852,6 +4917,22 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
       }
    }
 
+   /* "Remove from History" — available when source is GAME_SWITCHER or HISTORY */
+   if (view)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_GAME_SWITCHER
+            || src == STREAMLINED_VIEW_HISTORY)
+      {
+         menu_entries_append(list,
+               "Remove from History",
+               "glo_remove_from_history",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
    if (list->size == 0)
    {
       menu_entries_append(list,
@@ -5588,6 +5669,10 @@ static void streamlined_populate_entries(void *data,
          {
             streamlined_populate_random_preview(strm);
          }
+         else if (view && view->type == STREAMLINED_VIEW_CONFIRM_REMOVE)
+         {
+            streamlined_populate_confirm_remove(strm);
+         }
          else
          {
             /* Fresh main menu - reset stack */
@@ -5984,7 +6069,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_ADVANCED);
                streamlined_populate_settings_submenu();
-               menu_st->selection_ptr = 0;
                return 0;
             }
 
@@ -6108,7 +6192,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_SETTINGS);
                streamlined_push_nav_marker();
                streamlined_populate_main_settings_submenu();
-               menu_st->selection_ptr = 0;
                return 0;
             }
 
@@ -6121,7 +6204,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_populate_playlist_view(strm,
                      g_defaults.content_history, "No history");
                streamlined_artwork_reset(&strm->artwork);
-               menu_st->selection_ptr = 0;
                return 0;
             }
 
@@ -6134,7 +6216,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_populate_playlist_view(strm,
                      g_defaults.content_favorites, "No favorites");
                streamlined_artwork_reset(&strm->artwork);
-               menu_st->selection_ptr = 0;
                return 0;
             }
 
@@ -6145,7 +6226,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_PLAYLISTS);
                streamlined_push_nav_marker();
                streamlined_populate_playlists_list(strm);
-               menu_st->selection_ptr = 0;
                return 0;
             }
 
@@ -6175,7 +6255,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                               v->data.folder.folder_path,
                               v->data.folder.core_path);
                      streamlined_artwork_reset(&strm->artwork);
-                     menu_st->selection_ptr = 0;
                      return 0;
                   }
                   else if (path_is_valid(item_path))
@@ -6226,7 +6305,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                                  sizeof(v->data.core_select.content_path));
                         streamlined_push_nav_marker();
                         streamlined_populate_core_selection(strm, item_path);
-                        menu_st->selection_ptr = 0;
                         return 0;
                      }
                   }
@@ -6258,7 +6336,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                glo->data.game_list_options.source_count = 0;
                streamlined_push_nav_marker();
                streamlined_populate_game_list_options(strm);
-               menu_st->selection_ptr = 0;
             }
             return 0;
          }
@@ -6346,7 +6423,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                            v->data.folder.folder_path,
                            v->data.folder.core_path);
                   streamlined_artwork_reset(&strm->artwork);
-                  menu_st->selection_ptr = 0;
                   return 0;
                }
                else if (path_is_valid(item_path))
@@ -6376,7 +6452,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                            strlcpy(v->data.core_select.content_path, item_path,
                                  sizeof(v->data.core_select.content_path));
                         streamlined_populate_core_selection(strm, item_path);
-                        menu_st->selection_ptr = 0;
                         return 0;
                      }
                   }
@@ -6448,7 +6523,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                else
                   glo->data.game_list_options.core_path[0] = '\0';
                streamlined_populate_game_list_options(strm);
-               menu_st->selection_ptr = 0;
             }
             return 0;
          }
@@ -6525,7 +6599,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_populate_playlist_view(strm,
                      strm->user_playlist, "No games in playlist");
                streamlined_artwork_reset(&strm->artwork);
-               menu_st->selection_ptr = 0;
                return 0;
             }
          }
@@ -6551,7 +6624,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         sizeof(glo->data.game_list_options.item_label));
                glo->data.game_list_options.entry_idx = entry->entry_idx;
                streamlined_populate_game_list_options(strm);
-               menu_st->selection_ptr = 0;
             }
             return 0;
          }
@@ -6725,7 +6797,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         sizeof(v->data.core_select.content_path));
                streamlined_populate_core_selection(strm,
                      view->data.random_preview.content_path);
-               menu_st->selection_ptr = 0;
             }
             return 0;
          }
@@ -6792,6 +6863,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             else if (string_is_equal(sel_entry.label,
                   "glo_random_game"))
                streamlined_glo_random_game(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_remove_from_history"))
+               streamlined_glo_remove_from_history(strm);
 
             return 0;
          }
@@ -6841,6 +6915,126 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
                || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
             return generic_menu_entry_action(userdata, entry, i, action);
+         return 0;  /* Block all other input */
+      }
+
+      case STREAMLINED_VIEW_CONFIRM_REMOVE:
+      {
+         if (action == MENU_ACTION_OK)
+         {
+            menu_entry_t sel_entry;
+            MENU_ENTRY_INITIALIZE(sel_entry);
+            sel_entry.flags |= MENU_ENTRY_FLAG_LABEL_ENABLED;
+            menu_entry_get(&sel_entry, 0,
+                  (unsigned)menu_st->selection_ptr, NULL, true);
+
+            if (string_is_equal(sel_entry.label, "confirm_remove_yes"))
+            {
+               size_t idx = view->data.confirm_remove.history_idx;
+               streamlined_view_type_t source =
+                     view->data.confirm_remove.source_type;
+               size_t count;
+
+               if (!g_defaults.content_history)
+                  return 0;
+
+               count = playlist_size(g_defaults.content_history);
+               if (idx >= count)
+                  return 0;
+
+               /* Remove entry and persist */
+               playlist_delete_index(g_defaults.content_history, idx);
+               playlist_write_file(g_defaults.content_history);
+               count--;
+
+               /* Pop confirm view, then pop GLO view */
+               streamlined_view_pop(&strm->view_stack);
+               streamlined_view_pop(&strm->view_stack);
+               view = streamlined_view_current(&strm->view_stack);
+
+               if (source == STREAMLINED_VIEW_GAME_SWITCHER
+                     && view
+                     && view->type == STREAMLINED_VIEW_GAME_SWITCHER)
+               {
+                  view->data.game_switcher.count = count;
+                  if (count == 0)
+                  {
+                     streamlined_game_switcher_reset_thumbnail(strm);
+                     streamlined_view_pop(&strm->view_stack);
+                     view = streamlined_view_current(&strm->view_stack);
+                     if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+                        streamlined_pop_nav_marker();
+                  }
+                  else
+                  {
+                     if (idx >= count)
+                        idx = count - 1;
+                     streamlined_game_switcher_select(strm, idx);
+                  }
+               }
+               else if (source == STREAMLINED_VIEW_HISTORY
+                     && view
+                     && view->type == STREAMLINED_VIEW_HISTORY)
+               {
+                  if (count == 0)
+                  {
+                     streamlined_view_pop(&strm->view_stack);
+                     view = streamlined_view_current(&strm->view_stack);
+                     if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+                     {
+                        streamlined_pop_nav_marker();
+                        streamlined_populate_folder_menu(strm,
+                              view->data.main_menu.folder_path, false);
+                     }
+                     if (view)
+                        menu_st->selection_ptr = view->saved_selection;
+                  }
+                  else
+                  {
+                     streamlined_populate_playlist_view(strm,
+                           g_defaults.content_history, "No history");
+                     if (idx >= count)
+                        idx = count - 1;
+                     menu_st->selection_ptr = idx;
+                  }
+               }
+               return 0;
+            }
+
+            /* "Cancel": return to GLO */
+            if (string_is_equal(sel_entry.label, "confirm_remove_no"))
+            {
+               streamlined_view_pop(&strm->view_stack);
+               view = streamlined_view_current(&strm->view_stack);
+               if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+               {
+                  streamlined_populate_game_list_options(strm);
+                  menu_st->selection_ptr = view->saved_selection;
+               }
+               return 0;
+            }
+            return 0;
+         }
+
+         /* B button: cancel — return to GLO */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+            {
+               streamlined_populate_game_list_options(strm);
+               menu_st->selection_ptr = view->saved_selection;
+            }
+            return 0;
+         }
+
+         /* Allow navigation (up/down) */
+         if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+               || action == MENU_ACTION_SCROLL_UP
+               || action == MENU_ACTION_SCROLL_DOWN)
+            return generic_menu_entry_action(userdata, entry, i, action);
+
          return 0;  /* Block all other input */
       }
 
