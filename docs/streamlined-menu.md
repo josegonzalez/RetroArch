@@ -79,6 +79,10 @@ The Game Switcher only appears if you have played at least one game (your play h
 
 Press **Y** while browsing the main screen, a folder, History, Favorites, Playlists, a specific playlist, or the Game Switcher to open the Options menu. The Options menu shows actions you can perform on the highlighted item.
 
+When you have a game highlighted — in a folder, History, Favorites, a playlist, or the Game Switcher — the Options menu will show:
+
+- **Start Without Resume** - Starts the game fresh without loading your saved progress
+
 Press **B** to close the Options menu and go back to what you were doing before.
 
 ## The Quick Menu (Pause Menu)
