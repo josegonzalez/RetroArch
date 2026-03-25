@@ -6036,7 +6036,25 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             if (view)
             {
                if (view->type == STREAMLINED_VIEW_MAIN_MENU)
+               {
                   streamlined_pop_nav_marker();
+                  streamlined_populate_folder_menu(strm,
+                        view->data.main_menu.folder_path, false);
+               }
+               else if (view->type == STREAMLINED_VIEW_FOLDER)
+                  streamlined_populate_folder_menu(strm,
+                        view->data.folder.folder_path, true);
+               else if (view->type == STREAMLINED_VIEW_HISTORY)
+                  streamlined_populate_playlist_view(strm,
+                        g_defaults.content_history, "No history");
+               else if (view->type == STREAMLINED_VIEW_FAVORITES)
+                  streamlined_populate_playlist_view(strm,
+                        g_defaults.content_favorites, "No favorites");
+               else if (view->type == STREAMLINED_VIEW_PLAYLIST)
+                  streamlined_populate_playlist_view(strm,
+                        strm->user_playlist, "No games in playlist");
+               else if (view->type == STREAMLINED_VIEW_PLAYLISTS)
+                  streamlined_populate_playlists_list(strm);
                menu_st->selection_ptr = view->saved_selection;
             }
             return 0;
