@@ -3195,6 +3195,9 @@ static void streamlined_render_menu(streamlined_t *strm,
          if (view->data.confirm_remove.source_type
                == STREAMLINED_VIEW_FAVORITES)
             strlcpy(title_buf, "Remove from Favorites?", sizeof(title_buf));
+         else if (view->data.confirm_remove.source_type
+               == STREAMLINED_VIEW_PLAYLIST)
+            strlcpy(title_buf, "Remove from Playlist?", sizeof(title_buf));
          else
             strlcpy(title_buf, "Remove from History?", sizeof(title_buf));
          break;
@@ -4947,6 +4950,21 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
          menu_entries_append(list,
                "Remove from Favorites",
                "glo_remove_from_favorites",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
+   /* "Remove from Playlist" — available when source is PLAYLIST */
+   if (view)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_PLAYLIST)
+      {
+         menu_entries_append(list,
+               "Remove from Playlist",
+               "glo_remove_from_playlist",
                MSG_UNKNOWN,
                FILE_TYPE_NONE,
                0, 0, NULL);
@@ -6889,6 +6907,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_favorites"))
                streamlined_glo_confirm_remove(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_remove_from_playlist"))
+               streamlined_glo_confirm_remove(strm);
 
             return 0;
          }
@@ -6962,6 +6983,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                /* Resolve playlist from source type */
                if (source == STREAMLINED_VIEW_FAVORITES)
                   pl = g_defaults.content_favorites;
+               else if (source == STREAMLINED_VIEW_PLAYLIST)
+                  pl = strm->user_playlist;
                else
                   pl = g_defaults.content_history;
 
@@ -7002,12 +7025,19 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      streamlined_game_switcher_select(strm, idx);
                   }
                }
-               else if (source == STREAMLINED_VIEW_HISTORY
+               else if ((source == STREAMLINED_VIEW_HISTORY
+                        || source == STREAMLINED_VIEW_FAVORITES
+                        || source == STREAMLINED_VIEW_PLAYLIST)
                      && view
-                     && view->type == STREAMLINED_VIEW_HISTORY)
+                     && view->type == source)
                {
                   if (count == 0)
                   {
+                     if (source == STREAMLINED_VIEW_PLAYLIST)
+                     {
+                        streamlined_user_playlist_free(strm);
+                        streamlined_artwork_reset(&strm->artwork);
+                     }
                      streamlined_view_pop(&strm->view_stack);
                      view = streamlined_view_current(&strm->view_stack);
                      if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
@@ -7016,39 +7046,18 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         streamlined_populate_folder_menu(strm,
                               view->data.main_menu.folder_path, false);
                      }
+                     else if (view && view->type == STREAMLINED_VIEW_PLAYLISTS)
+                        streamlined_populate_playlists_list(strm);
                      if (view)
                         menu_st->selection_ptr = view->saved_selection;
                   }
                   else
                   {
-                     streamlined_populate_playlist_view(strm,
-                           g_defaults.content_history, "No history");
-                     if (idx >= count)
-                        idx = count - 1;
-                     menu_st->selection_ptr = idx;
-                  }
-               }
-               else if (source == STREAMLINED_VIEW_FAVORITES
-                     && view
-                     && view->type == STREAMLINED_VIEW_FAVORITES)
-               {
-                  if (count == 0)
-                  {
-                     streamlined_view_pop(&strm->view_stack);
-                     view = streamlined_view_current(&strm->view_stack);
-                     if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
-                     {
-                        streamlined_pop_nav_marker();
-                        streamlined_populate_folder_menu(strm,
-                              view->data.main_menu.folder_path, false);
-                     }
-                     if (view)
-                        menu_st->selection_ptr = view->saved_selection;
-                  }
-                  else
-                  {
-                     streamlined_populate_playlist_view(strm,
-                           g_defaults.content_favorites, "No favorites");
+                     const char *empty_msg =
+                           source == STREAMLINED_VIEW_HISTORY   ? "No history" :
+                           source == STREAMLINED_VIEW_FAVORITES ? "No favorites" :
+                                                                  "No games in playlist";
+                     streamlined_populate_playlist_view(strm, pl, empty_msg);
                      if (idx >= count)
                         idx = count - 1;
                      menu_st->selection_ptr = idx;
