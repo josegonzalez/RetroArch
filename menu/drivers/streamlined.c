@@ -567,6 +567,16 @@ static void streamlined_populate_confirm_remove(streamlined_t *strm);
 static void streamlined_populate_core_selection(
       streamlined_t *strm, const char *content_path);
 static file_list_t *streamlined_get_and_clear_menu_list(void);
+static void streamlined_cancel_to_main_menu(
+      streamlined_t *strm, struct menu_state *menu_st);
+static void streamlined_reset_to_main_menu(
+      streamlined_t *strm, const char *folder_path);
+static void streamlined_return_to_glo(
+      streamlined_t *strm, struct menu_state *menu_st,
+      bool reset_artwork);
+static void streamlined_enter_subfolder(
+      streamlined_t *strm, const char *item_path,
+      bool push_nav_marker);
 
 /* Artwork forward declarations */
 static const char *streamlined_get_artwork_type_dir(unsigned artwork_type);
@@ -2521,6 +2531,18 @@ static void streamlined_draw_random_preview(streamlined_t *strm,
          extra_key, extra_str);
 }
 
+/* Set up resume state for a game launched from the game switcher */
+static void streamlined_prepare_switcher_resume(
+      streamlined_t *strm, size_t idx)
+{
+   streamlined_game_switcher_reset_thumbnail(strm);
+   strm->resume.active         = true;
+   strm->resume.source         = STREAMLINED_RESUME_HISTORY;
+   strm->resume.folder_path[0] = '\0';
+   strm->resume.selection      = idx;
+   strm->view_stack.top = -1;
+}
+
 static void streamlined_game_switcher_launch(streamlined_t *strm)
 {
    const struct playlist_entry *pl_entry = NULL;
@@ -2553,17 +2575,7 @@ static void streamlined_game_switcher_launch(streamlined_t *strm)
          || !path_is_valid(resolved_core))
       return;
 
-   streamlined_game_switcher_reset_thumbnail(strm);
-
-   /* Set resume state before clearing stack — launch_content won't find
-    * GAME_SWITCHER in its stack scan, so we set resume manually */
-   strm->resume.active        = true;
-   strm->resume.source        = STREAMLINED_RESUME_HISTORY;
-   strm->resume.folder_path[0] = '\0';
-   strm->resume.selection     = idx;
-
-   /* Clear view stack so launch_content doesn't find stale views */
-   strm->view_stack.top = -1;
+   streamlined_prepare_switcher_resume(strm, idx);
 
    streamlined_request_loading(strm, resolved_core, resolved_content, true);
 }
@@ -2597,17 +2609,7 @@ static void streamlined_glo_launch_without_resume(streamlined_t *strm)
    streamlined_view_pop(&strm->view_stack);
 
    if (source_type == STREAMLINED_VIEW_GAME_SWITCHER)
-   {
-      streamlined_game_switcher_reset_thumbnail(strm);
-
-      /* Manually set resume — launch_content doesn't scan for GAME_SWITCHER */
-      strm->resume.active         = true;
-      strm->resume.source         = STREAMLINED_RESUME_HISTORY;
-      strm->resume.folder_path[0] = '\0';
-      strm->resume.selection      = entry_idx;
-
-      strm->view_stack.top = -1;
-   }
+      streamlined_prepare_switcher_resume(strm, entry_idx);
    /* For game views, launch_content finds the view on the stack and sets resume */
 
    strm->loading_skip_auto_load = true;
@@ -3025,6 +3027,24 @@ static void streamlined_game_switcher_remove(streamlined_t *strm)
 
    /* Reload the current entry */
    streamlined_game_switcher_select(strm, idx);
+}
+
+/* Draw a right-aligned truncated value string */
+static void streamlined_draw_entry_value(streamlined_t *strm,
+      gfx_display_t *p_disp, unsigned video_width, unsigned video_height,
+      const char *value, int max_value_width, int content_width,
+      int text_y, const float *color)
+{
+   char truncated_value[256];
+   int value_width;
+
+   streamlined_truncate_text(strm, value, truncated_value,
+         sizeof(truncated_value), max_value_width, false);
+   value_width = streamlined_get_text_width(strm, truncated_value, false);
+
+   streamlined_draw_text(strm, p_disp, video_width, video_height,
+         strm->margin_x + content_width - value_width, text_y,
+         truncated_value, color, false);
 }
 
 /* ======================================================================
@@ -3456,18 +3476,9 @@ static void streamlined_render_menu(streamlined_t *strm,
 
          /* Value stays on the right, truncated to max width */
          if (show_value)
-         {
-            char truncated_value[256];
-            int value_width;
-
-            streamlined_truncate_text(strm, entry.value, truncated_value,
-                  sizeof(truncated_value), max_value_width, false);
-            value_width = streamlined_get_text_width(strm, truncated_value, false);
-
-            streamlined_draw_text(strm, p_disp, video_width, video_height,
-                  strm->margin_x + content_width - value_width, text_y,
-                  truncated_value, streamlined_color_text_dark, false);
-         }
+            streamlined_draw_entry_value(strm, p_disp, video_width, video_height,
+                  entry.value, max_value_width, content_width, text_y,
+                  streamlined_color_text_dark);
       }
       else
       {
@@ -3482,18 +3493,9 @@ static void streamlined_render_menu(streamlined_t *strm,
                truncated_label, streamlined_color_text, false);
 
          if (show_value)
-         {
-            char truncated_value[256];
-            int value_width;
-
-            streamlined_truncate_text(strm, entry.value, truncated_value,
-                  sizeof(truncated_value), max_value_width, false);
-            value_width = streamlined_get_text_width(strm, truncated_value, false);
-
-            streamlined_draw_text(strm, p_disp, video_width, video_height,
-                  strm->margin_x + content_width - value_width, text_y,
-                  truncated_value, streamlined_color_text, false);
-         }
+            streamlined_draw_entry_value(strm, p_disp, video_width, video_height,
+                  entry.value, max_value_width, content_width, text_y,
+                  streamlined_color_text);
       }
       } /* end show_value scope */
 
@@ -5595,11 +5597,7 @@ static void streamlined_populate_entries(void *data,
             const char *empty_msg;
             streamlined_view_type_t view_type;
 
-            strm->view_stack.top = -1;
-            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
-            if (v)
-               strlcpy(v->data.main_menu.folder_path, start_dir,
-                     sizeof(v->data.main_menu.folder_path));
+            streamlined_reset_to_main_menu(strm, start_dir);
 
             switch (strm->resume.source)
             {
@@ -5637,11 +5635,7 @@ static void streamlined_populate_entries(void *data,
          {
             /* Returning from game - rebuild stack with folder state */
             streamlined_view_t *v;
-            strm->view_stack.top = -1;
-            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
-            if (v)
-               strlcpy(v->data.main_menu.folder_path, start_dir,
-                     sizeof(v->data.main_menu.folder_path));
+            streamlined_reset_to_main_menu(strm, start_dir);
             v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
             if (v)
             {
@@ -5714,12 +5708,7 @@ static void streamlined_populate_entries(void *data,
          else
          {
             /* Fresh main menu - reset stack */
-            streamlined_view_t *v;
-            strm->view_stack.top = -1;
-            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
-            if (v)
-               strlcpy(v->data.main_menu.folder_path, start_dir,
-                     sizeof(v->data.main_menu.folder_path));
+            streamlined_reset_to_main_menu(strm, start_dir);
             streamlined_populate_folder_menu(strm, start_dir, false);
          }
       }
@@ -5991,6 +5980,78 @@ static void streamlined_launch_content(streamlined_t *strm,
             content_load_state(auto_path, false, true);
       }
    }
+}
+
+/* Pop the current view and return to the main menu, restoring nav state */
+static void streamlined_cancel_to_main_menu(
+      streamlined_t *strm, struct menu_state *menu_st)
+{
+   streamlined_view_t *view;
+   streamlined_view_pop(&strm->view_stack);
+   view = streamlined_view_current(&strm->view_stack);
+   if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+   {
+      streamlined_pop_nav_marker();
+      streamlined_populate_folder_menu(strm,
+            view->data.main_menu.folder_path, false);
+   }
+   if (view)
+      menu_st->selection_ptr = view->saved_selection;
+}
+
+/* Reset the view stack and push a fresh MAIN_MENU with the given folder */
+static void streamlined_reset_to_main_menu(
+      streamlined_t *strm, const char *folder_path)
+{
+   streamlined_view_t *v;
+   strm->view_stack.top = -1;
+   v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
+   if (v)
+      strlcpy(v->data.main_menu.folder_path, folder_path,
+            sizeof(v->data.main_menu.folder_path));
+}
+
+/* Pop the current subview and return to the parent GLO view */
+static void streamlined_return_to_glo(
+      streamlined_t *strm, struct menu_state *menu_st,
+      bool reset_artwork)
+{
+   streamlined_view_t *view;
+   if (reset_artwork)
+      streamlined_artwork_reset(&strm->artwork);
+   streamlined_view_pop(&strm->view_stack);
+   view = streamlined_view_current(&strm->view_stack);
+   if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+   {
+      streamlined_populate_game_list_options(strm);
+      menu_st->selection_ptr = view->saved_selection;
+   }
+}
+
+/* Push a FOLDER view for the given path, read its core, and populate */
+static void streamlined_enter_subfolder(
+      streamlined_t *strm, const char *item_path,
+      bool push_nav_marker)
+{
+   streamlined_view_t *v;
+
+   v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
+   if (v)
+   {
+      strlcpy(v->data.folder.folder_path, item_path,
+            sizeof(v->data.folder.folder_path));
+      if (!streamlined_read_folder_core(item_path, v->data.folder.core_path,
+            sizeof(v->data.folder.core_path)))
+         v->data.folder.core_path[0] = '\0';
+   }
+   if (push_nav_marker)
+      streamlined_push_nav_marker();
+   streamlined_populate_folder_menu(strm, item_path, true);
+   if (v)
+      streamlined_artwork_start_scan(strm,
+            v->data.folder.folder_path,
+            v->data.folder.core_path);
+   streamlined_artwork_reset(&strm->artwork);
 }
 
 /*
@@ -6274,25 +6335,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                {
                   if (path_is_directory(item_path))
                   {
-                     streamlined_view_t *v;
-            
-                     v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
-                     if (v)
-                     {
-                        strlcpy(v->data.folder.folder_path, item_path,
-                              sizeof(v->data.folder.folder_path));
-                        if (!streamlined_read_folder_core(item_path, v->data.folder.core_path,
-                              sizeof(v->data.folder.core_path)))
-                           v->data.folder.core_path[0] = '\0';
-                     }
-                     streamlined_push_nav_marker();
-                     streamlined_populate_folder_menu(strm, item_path, true);
-                     /* Start artwork scan for new folder */
-                     if (v)
-                        streamlined_artwork_start_scan(strm,
-                              v->data.folder.folder_path,
-                              v->data.folder.core_path);
-                     streamlined_artwork_reset(&strm->artwork);
+                     streamlined_enter_subfolder(strm, item_path, true);
                      return 0;
                   }
                   else if (path_is_valid(item_path))
@@ -6443,24 +6486,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                if (path_is_directory(item_path))
                {
                   /* Enter subfolder - push new FOLDER view */
-                  streamlined_view_t *v;
-         
-                  v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
-                  if (v)
-                  {
-                     strlcpy(v->data.folder.folder_path, item_path,
-                           sizeof(v->data.folder.folder_path));
-                     if (!streamlined_read_folder_core(item_path, v->data.folder.core_path,
-                           sizeof(v->data.folder.core_path)))
-                        v->data.folder.core_path[0] = '\0';
-                  }
-                  streamlined_populate_folder_menu(strm, item_path, true);
-                  /* Start artwork scan for subfolder */
-                  if (v)
-                     streamlined_artwork_start_scan(strm,
-                           v->data.folder.folder_path,
-                           v->data.folder.core_path);
-                  streamlined_artwork_reset(&strm->artwork);
+                  streamlined_enter_subfolder(strm, item_path, false);
                   return 0;
                }
                else if (path_is_valid(item_path))
@@ -6577,15 +6603,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* Back: return to main menu */
          if (action == MENU_ACTION_CANCEL)
          {
-            streamlined_view_pop(&strm->view_stack);
-            view = streamlined_view_current(&strm->view_stack);
-            if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
-            {
-               streamlined_pop_nav_marker();
-               streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
-            }
-            if (view)
-               menu_st->selection_ptr = view->saved_selection;
+            streamlined_cancel_to_main_menu(strm, menu_st);
             return 0;
          }
 
@@ -6605,15 +6623,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* Back: return to main menu */
          if (action == MENU_ACTION_CANCEL)
          {
-            streamlined_view_pop(&strm->view_stack);
-            view = streamlined_view_current(&strm->view_stack);
-            if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
-            {
-               streamlined_pop_nav_marker();
-               streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
-            }
-            if (view)
-               menu_st->selection_ptr = view->saved_selection;
+            streamlined_cancel_to_main_menu(strm, menu_st);
             return 0;
          }
 
@@ -6809,14 +6819,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
                /* Set resume state before launch */
                if (src == STREAMLINED_VIEW_GAME_SWITCHER)
-               {
-                  streamlined_game_switcher_reset_thumbnail(strm);
-                  strm->resume.active         = true;
-                  strm->resume.source         = STREAMLINED_RESUME_HISTORY;
-                  strm->resume.folder_path[0] = '\0';
-                  strm->resume.selection      = idx;
-                  strm->view_stack.top = -1;
-               }
+                  streamlined_prepare_switcher_resume(strm, idx);
 
                streamlined_request_loading(strm,
                      view->data.random_preview.core_path,
@@ -6849,14 +6852,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                size_t idx = view->data.random_preview.random_idx;
 
                if (src == STREAMLINED_VIEW_GAME_SWITCHER)
-               {
-                  streamlined_game_switcher_reset_thumbnail(strm);
-                  strm->resume.active         = true;
-                  strm->resume.source         = STREAMLINED_RESUME_HISTORY;
-                  strm->resume.folder_path[0] = '\0';
-                  strm->resume.selection      = idx;
-                  strm->view_stack.top = -1;
-               }
+                  streamlined_prepare_switcher_resume(strm, idx);
 
                streamlined_request_loading(strm,
                      view->data.random_preview.core_path,
@@ -6869,14 +6865,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* B button: go back to GLO */
          if (action == MENU_ACTION_CANCEL)
          {
-            streamlined_artwork_reset(&strm->artwork);
-            streamlined_view_pop(&strm->view_stack);
-            view = streamlined_view_current(&strm->view_stack);
-            if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
-            {
-               streamlined_populate_game_list_options(strm);
-               menu_st->selection_ptr = view->saved_selection;
-            }
+            streamlined_return_to_glo(strm, menu_st, true);
             return 0;
          }
 
@@ -7069,13 +7058,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             /* "Cancel": return to GLO */
             if (string_is_equal(sel_entry.label, "confirm_remove_no"))
             {
-               streamlined_view_pop(&strm->view_stack);
-               view = streamlined_view_current(&strm->view_stack);
-               if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
-               {
-                  streamlined_populate_game_list_options(strm);
-                  menu_st->selection_ptr = view->saved_selection;
-               }
+               streamlined_return_to_glo(strm, menu_st, false);
                return 0;
             }
             return 0;
@@ -7084,13 +7067,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* B button: cancel — return to GLO */
          if (action == MENU_ACTION_CANCEL)
          {
-            streamlined_view_pop(&strm->view_stack);
-            view = streamlined_view_current(&strm->view_stack);
-            if (view && view->type == STREAMLINED_VIEW_GAME_LIST_OPTIONS)
-            {
-               streamlined_populate_game_list_options(strm);
-               menu_st->selection_ptr = view->saved_selection;
-            }
+            streamlined_return_to_glo(strm, menu_st, false);
             return 0;
          }
 
