@@ -21382,6 +21382,22 @@ static bool setting_append_list(
                general_read_handler,
                SD_FLAG_NONE);
 
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.streamlined_artwork_type,
+               MENU_ENUM_LABEL_STREAMLINED_ARTWORK_TYPE,
+               MENU_ENUM_LABEL_VALUE_STREAMLINED_ARTWORK_TYPE,
+               2,  /* default: Title Screen */
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         (*list)[list_info->index - 1].get_string_representation =
+               &setting_get_string_representation_uint_menu_thumbnails;
+         menu_settings_list_current_add_range(list, list_info, 0, 4, 1, true, true);
+         (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_RADIO_BUTTONS;
 
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);

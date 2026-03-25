@@ -422,6 +422,7 @@ typedef struct settings
       unsigned smb_client_timeout;
 #endif
       unsigned input_sensor_orientation;
+      unsigned int streamlined_artwork_type;
    } uints;
 
    struct
