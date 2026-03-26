@@ -306,6 +306,7 @@ typedef struct
          streamlined_view_type_t source_type;
          char item_label[256];
          char playlist_path[PATH_MAX_LENGTH];
+         char content_path[PATH_MAX_LENGTH];
       } confirm_remove;
       struct {
          char content_path[PATH_MAX_LENGTH];
@@ -586,9 +587,16 @@ static void streamlined_populate_playlist_list_filtered(
 static void streamlined_glo_pop_to_source(
       streamlined_t *strm, struct menu_state *menu_st);
 static void streamlined_populate_random_preview(streamlined_t *strm);
-static void streamlined_glo_confirm_remove(streamlined_t *strm);
+static void streamlined_glo_confirm_remove(streamlined_t *strm,
+      const char *content_path);
 static void streamlined_glo_remove_playlist(streamlined_t *strm);
 static void streamlined_populate_confirm_remove(streamlined_t *strm);
+static void streamlined_delete_game_file(const char *content_path);
+static void streamlined_remove_from_all_playlists(
+      streamlined_t *strm, const char *content_path);
+static void streamlined_confirm_remove_update_view(
+      streamlined_t *strm, struct menu_state *menu_st,
+      streamlined_view_type_t source, size_t idx, size_t count);
 static void streamlined_playlist_config_init(
       playlist_config_t *config, const char *path);
 static void streamlined_glo_create_playlist(streamlined_t *strm);
@@ -2725,7 +2733,8 @@ static void streamlined_glo_launch_without_resume(streamlined_t *strm)
  * GLO action: push confirmation view before removing an item.
  * Works for both history and favorites — source_type distinguishes them.
  */
-static void streamlined_glo_confirm_remove(streamlined_t *strm)
+static void streamlined_glo_confirm_remove(streamlined_t *strm,
+      const char *content_path)
 {
    streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
    streamlined_view_t *confirm;
@@ -2744,6 +2753,10 @@ static void streamlined_glo_confirm_remove(streamlined_t *strm)
       strlcpy(confirm->data.confirm_remove.item_label,
             glo->data.game_list_options.item_label,
             sizeof(confirm->data.confirm_remove.item_label));
+      if (!string_is_empty(content_path))
+         strlcpy(confirm->data.confirm_remove.content_path,
+               content_path,
+               sizeof(confirm->data.confirm_remove.content_path));
       streamlined_populate_confirm_remove(strm);
    }
 }
@@ -2795,6 +2808,276 @@ static void streamlined_glo_remove_playlist(streamlined_t *strm)
             playlist_path,
             sizeof(confirm->data.confirm_remove.playlist_path));
       streamlined_populate_confirm_remove(strm);
+   }
+}
+
+/*
+ * Delete a game file from disk. Handles three cases:
+ * 1. Archive (path contains archive delimiter '#'): delete the archive file
+ * 2. M3U multi-disc (path ends with .m3u): delete the entire containing folder
+ * 3. Regular file: delete the file and any .core.<filename>.txt override
+ */
+static void streamlined_delete_game_file(const char *content_path)
+{
+   const char *delim;
+
+   if (string_is_empty(content_path))
+      return;
+
+   /* Archive game: extract and delete the archive file */
+   delim = path_get_archive_delim(content_path);
+   if (delim)
+   {
+      char archive_path[PATH_MAX_LENGTH];
+      size_t len = (size_t)(delim - content_path);
+      if (len >= sizeof(archive_path))
+         len = sizeof(archive_path) - 1;
+      memcpy(archive_path, content_path, len);
+      archive_path[len] = '\0';
+      filestream_delete(archive_path);
+      return;
+   }
+
+   /* M3U multi-disc game: delete entire containing folder */
+   {
+      const char *ext = path_get_extension(content_path);
+      if (ext && string_is_equal_noncase(ext, "m3u"))
+      {
+         char parent_dir[PATH_MAX_LENGTH];
+         struct string_list *files;
+
+         fill_pathname_basedir(parent_dir, content_path,
+               sizeof(parent_dir));
+         /* Remove trailing slash */
+         {
+            size_t plen = strlen(parent_dir);
+            if (plen > 0 && parent_dir[plen - 1] == '/')
+               parent_dir[plen - 1] = '\0';
+         }
+
+         files = dir_list_new(parent_dir, NULL, false, true, false, false);
+         if (files)
+         {
+            unsigned j;
+            for (j = 0; j < files->size; j++)
+               filestream_delete(files->elems[j].data);
+            string_list_free(files);
+         }
+         filestream_delete(parent_dir);
+         return;
+      }
+   }
+
+   /* Regular file: delete it and clean up core override */
+   filestream_delete(content_path);
+   {
+      const char *filename = path_basename(content_path);
+      if (!string_is_empty(filename))
+      {
+         char dir[PATH_MAX_LENGTH];
+         char override_path[PATH_MAX_LENGTH];
+
+         fill_pathname_basedir(dir, content_path, sizeof(dir));
+         snprintf(override_path, sizeof(override_path),
+               "%s.core.%s.txt", dir, filename);
+         if (path_is_valid(override_path))
+            filestream_delete(override_path);
+      }
+   }
+}
+
+/*
+ * Remove a game from all playlists: history, favorites, and every
+ * user playlist in the playlist directory. Frees strm->user_playlist
+ * since it may now be stale.
+ */
+static void streamlined_remove_from_all_playlists(
+      streamlined_t *strm, const char *content_path)
+{
+   settings_t *settings;
+   const char *dir_playlist;
+   struct string_list *str_list;
+
+   if (string_is_empty(content_path))
+      return;
+
+   /* Remove from history */
+   if (g_defaults.content_history)
+   {
+      playlist_delete_by_path(g_defaults.content_history, content_path);
+      playlist_write_file(g_defaults.content_history);
+   }
+
+   /* Remove from favorites */
+   if (g_defaults.content_favorites)
+   {
+      playlist_delete_by_path(g_defaults.content_favorites, content_path);
+      playlist_write_file(g_defaults.content_favorites);
+   }
+
+   /* Remove from all user playlists */
+   settings     = config_get_ptr();
+   dir_playlist = settings->paths.directory_playlist;
+
+   if (!string_is_empty(dir_playlist))
+   {
+      str_list = dir_list_new(dir_playlist, "lpl", false, false, false, false);
+      if (str_list)
+      {
+         unsigned j;
+         for (j = 0; j < str_list->size; j++)
+         {
+            const char *path     = str_list->elems[j].data;
+            const char *filename = path_basename(path);
+            playlist_config_t config;
+            playlist_t *pl;
+
+            if (!filename || filename[0] == '.')
+               continue;
+            if (string_ends_with_size(path, "_history.lpl",
+                     strlen(path), STRLEN_CONST("_history.lpl")))
+               continue;
+            if (string_is_equal(filename, FILE_PATH_CONTENT_FAVORITES))
+               continue;
+
+            streamlined_playlist_config_init(&config, path);
+            pl = playlist_init(&config);
+            if (pl)
+            {
+               playlist_delete_by_path(pl, content_path);
+               playlist_write_file(pl);
+               playlist_free(pl);
+            }
+         }
+         string_list_free(str_list);
+      }
+   }
+
+   /* Free loaded user playlist — it may be stale */
+   streamlined_user_playlist_free(strm);
+}
+
+/*
+ * Shared view update after removing an entry (from history/favorites/playlist
+ * or via Remove Game). Caller must pop confirm + GLO views first.
+ * For PLAYLIST source with count > 0, strm->user_playlist must be loaded.
+ */
+static void streamlined_confirm_remove_update_view(
+      streamlined_t *strm, struct menu_state *menu_st,
+      streamlined_view_type_t source, size_t idx, size_t count)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+
+   if (source == STREAMLINED_VIEW_GAME_SWITCHER
+         && view
+         && view->type == STREAMLINED_VIEW_GAME_SWITCHER)
+   {
+      view->data.game_switcher.count = count;
+      if (count == 0)
+      {
+         streamlined_game_switcher_reset_thumbnail(strm);
+         streamlined_view_pop(&strm->view_stack);
+         view = streamlined_view_current(&strm->view_stack);
+         if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+            streamlined_pop_nav_marker();
+      }
+      else
+      {
+         if (idx >= count)
+            idx = count - 1;
+         streamlined_game_switcher_select(strm, idx);
+      }
+   }
+   else if (source == STREAMLINED_VIEW_FOLDER
+         && view
+         && view->type == STREAMLINED_VIEW_FOLDER)
+   {
+      file_list_t *cur_list;
+      size_t new_count;
+
+      streamlined_populate_folder_menu(strm,
+            view->data.folder.folder_path, true);
+      cur_list  = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+      new_count = cur_list ? cur_list->size : 0;
+
+      if (new_count == 0)
+      {
+         streamlined_view_pop(&strm->view_stack);
+         view = streamlined_view_current(&strm->view_stack);
+         if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+         {
+            streamlined_pop_nav_marker();
+            streamlined_populate_folder_menu(strm,
+                  view->data.main_menu.folder_path, false);
+         }
+         else if (view && view->type == STREAMLINED_VIEW_FOLDER)
+            streamlined_populate_folder_menu(strm,
+                  view->data.folder.folder_path, true);
+         if (view)
+            menu_st->selection_ptr = view->saved_selection;
+      }
+      else
+      {
+         if (idx >= new_count)
+            idx = new_count - 1;
+         menu_st->selection_ptr = idx;
+      }
+   }
+   else if ((source == STREAMLINED_VIEW_HISTORY
+            || source == STREAMLINED_VIEW_FAVORITES
+            || source == STREAMLINED_VIEW_PLAYLIST)
+         && view
+         && view->type == source)
+   {
+      if (count == 0)
+      {
+         if (source == STREAMLINED_VIEW_PLAYLIST)
+         {
+            streamlined_user_playlist_free(strm);
+            streamlined_artwork_reset(&strm->artwork);
+         }
+         streamlined_view_pop(&strm->view_stack);
+         view = streamlined_view_current(&strm->view_stack);
+         if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+         {
+            streamlined_pop_nav_marker();
+            streamlined_populate_folder_menu(strm,
+                  view->data.main_menu.folder_path, false);
+         }
+         else if (view && view->type == STREAMLINED_VIEW_PLAYLISTS)
+            streamlined_populate_playlists_list(strm);
+         if (view)
+            menu_st->selection_ptr = view->saved_selection;
+      }
+      else
+      {
+         playlist_t *pl;
+         const char *empty_msg;
+
+         if (source == STREAMLINED_VIEW_HISTORY)
+         {
+            pl        = g_defaults.content_history;
+            empty_msg = "No history";
+         }
+         else if (source == STREAMLINED_VIEW_FAVORITES)
+         {
+            pl        = g_defaults.content_favorites;
+            empty_msg = "No favorites";
+         }
+         else
+         {
+            pl        = strm->user_playlist;
+            empty_msg = "No games in playlist";
+         }
+
+         if (pl)
+         {
+            streamlined_populate_playlist_view(strm, pl, empty_msg);
+            if (idx >= count)
+               idx = count - 1;
+            menu_st->selection_ptr = idx;
+         }
+      }
    }
 }
 
@@ -3685,7 +3968,9 @@ static void streamlined_render_menu(streamlined_t *strm,
          strlcpy(title_buf, "New Playlist", sizeof(title_buf));
          break;
       case STREAMLINED_VIEW_CONFIRM_REMOVE:
-         if (!string_is_empty(view->data.confirm_remove.playlist_path))
+         if (!string_is_empty(view->data.confirm_remove.content_path))
+            strlcpy(title_buf, "Remove Game?", sizeof(title_buf));
+         else if (!string_is_empty(view->data.confirm_remove.playlist_path))
             strlcpy(title_buf, "Remove Playlist?", sizeof(title_buf));
          else if (view->data.confirm_remove.source_type
                == STREAMLINED_VIEW_FAVORITES)
@@ -5523,6 +5808,25 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
          menu_entries_append(list,
                "Remove Playlist",
                "glo_remove_playlist",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
+   /* "Remove Game" — available when browsing any game view */
+   if (view)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_FOLDER
+            || src == STREAMLINED_VIEW_HISTORY
+            || src == STREAMLINED_VIEW_FAVORITES
+            || src == STREAMLINED_VIEW_PLAYLIST
+            || src == STREAMLINED_VIEW_GAME_SWITCHER)
+      {
+         menu_entries_append(list,
+               "Remove Game",
+               "glo_remove_game",
                MSG_UNKNOWN,
                FILE_TYPE_NONE,
                0, 0, NULL);
@@ -7476,19 +7780,28 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_glo_add_to_playlist(strm);
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_history"))
-               streamlined_glo_confirm_remove(strm);
+               streamlined_glo_confirm_remove(strm, NULL);
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_favorites"))
-               streamlined_glo_confirm_remove(strm);
+               streamlined_glo_confirm_remove(strm, NULL);
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_playlist"))
-               streamlined_glo_confirm_remove(strm);
+               streamlined_glo_confirm_remove(strm, NULL);
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_playlist"))
                streamlined_glo_remove_playlist(strm);
             else if (string_is_equal(sel_entry.label,
                   "glo_create_playlist"))
                streamlined_glo_create_playlist(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_remove_game"))
+            {
+               streamlined_view_t *glo_v =
+                     streamlined_view_current(&strm->view_stack);
+               streamlined_glo_confirm_remove(strm,
+                     glo_v ? glo_v->data.game_list_options.item_path
+                           : NULL);
+            }
 
             return 0;
          }
@@ -7609,6 +7922,56 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                playlist_t *pl = NULL;
                size_t count;
 
+               /* Handle "Remove Game" — delete file and purge all playlists */
+               if (!string_is_empty(view->data.confirm_remove.content_path))
+               {
+                  const char *cp = view->data.confirm_remove.content_path;
+
+                  streamlined_delete_game_file(cp);
+                  streamlined_remove_from_all_playlists(strm, cp);
+                  streamlined_artwork_reset(&strm->artwork);
+
+                  /* Pop confirm + GLO */
+                  streamlined_view_pop(&strm->view_stack);
+                  streamlined_view_pop(&strm->view_stack);
+
+                  /* For PLAYLIST source, reload user playlist for the
+                   * update helper (remove_from_all_playlists freed it) */
+                  if (source == STREAMLINED_VIEW_PLAYLIST)
+                  {
+                     int si;
+                     for (si = strm->view_stack.top; si >= 0; si--)
+                     {
+                        if (strm->view_stack.entries[si].type
+                              == STREAMLINED_VIEW_PLAYLIST)
+                        {
+                           streamlined_load_user_playlist(strm,
+                                 strm->view_stack.entries[si]
+                                       .data.playlist.playlist_path);
+                           break;
+                        }
+                     }
+                  }
+
+                  /* Resolve new count from source */
+                  if (source == STREAMLINED_VIEW_GAME_SWITCHER
+                        || source == STREAMLINED_VIEW_HISTORY)
+                     count = g_defaults.content_history
+                           ? playlist_size(g_defaults.content_history) : 0;
+                  else if (source == STREAMLINED_VIEW_FAVORITES)
+                     count = g_defaults.content_favorites
+                           ? playlist_size(g_defaults.content_favorites) : 0;
+                  else if (source == STREAMLINED_VIEW_PLAYLIST)
+                     count = strm->user_playlist
+                           ? playlist_size(strm->user_playlist) : 0;
+                  else
+                     count = 0; /* FOLDER: helper computes from dir list */
+
+                  streamlined_confirm_remove_update_view(
+                        strm, menu_st, source, idx, count);
+                  return 0;
+               }
+
                /* Handle "Remove Playlist" — delete the playlist file */
                if (!string_is_empty(view->data.confirm_remove.playlist_path))
                {
@@ -7675,69 +8038,11 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                playlist_write_file(pl);
                count--;
 
-               /* Pop confirm view, then pop GLO view */
+               /* Pop confirm + GLO, then update source view */
                streamlined_view_pop(&strm->view_stack);
                streamlined_view_pop(&strm->view_stack);
-               view = streamlined_view_current(&strm->view_stack);
-
-               if (source == STREAMLINED_VIEW_GAME_SWITCHER
-                     && view
-                     && view->type == STREAMLINED_VIEW_GAME_SWITCHER)
-               {
-                  view->data.game_switcher.count = count;
-                  if (count == 0)
-                  {
-                     streamlined_game_switcher_reset_thumbnail(strm);
-                     streamlined_view_pop(&strm->view_stack);
-                     view = streamlined_view_current(&strm->view_stack);
-                     if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
-                        streamlined_pop_nav_marker();
-                  }
-                  else
-                  {
-                     if (idx >= count)
-                        idx = count - 1;
-                     streamlined_game_switcher_select(strm, idx);
-                  }
-               }
-               else if ((source == STREAMLINED_VIEW_HISTORY
-                        || source == STREAMLINED_VIEW_FAVORITES
-                        || source == STREAMLINED_VIEW_PLAYLIST)
-                     && view
-                     && view->type == source)
-               {
-                  if (count == 0)
-                  {
-                     if (source == STREAMLINED_VIEW_PLAYLIST)
-                     {
-                        streamlined_user_playlist_free(strm);
-                        streamlined_artwork_reset(&strm->artwork);
-                     }
-                     streamlined_view_pop(&strm->view_stack);
-                     view = streamlined_view_current(&strm->view_stack);
-                     if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
-                     {
-                        streamlined_pop_nav_marker();
-                        streamlined_populate_folder_menu(strm,
-                              view->data.main_menu.folder_path, false);
-                     }
-                     else if (view && view->type == STREAMLINED_VIEW_PLAYLISTS)
-                        streamlined_populate_playlists_list(strm);
-                     if (view)
-                        menu_st->selection_ptr = view->saved_selection;
-                  }
-                  else
-                  {
-                     const char *empty_msg =
-                           source == STREAMLINED_VIEW_HISTORY   ? "No history" :
-                           source == STREAMLINED_VIEW_FAVORITES ? "No favorites" :
-                                                                  "No games in playlist";
-                     streamlined_populate_playlist_view(strm, pl, empty_msg);
-                     if (idx >= count)
-                        idx = count - 1;
-                     menu_st->selection_ptr = idx;
-                  }
-               }
+               streamlined_confirm_remove_update_view(
+                     strm, menu_st, source, idx, count);
                return 0;
             }
 

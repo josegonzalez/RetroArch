@@ -89,6 +89,7 @@ When you have a game highlighted — in a folder, History, Favorites, a playlist
 - **Remove from Favorites** - Removes the game from your favorites. You will be asked to confirm before it is removed. This option only appears when you are browsing Favorites.
 - **Remove from Playlist** - Removes the game from the playlist you are browsing. You will be asked to confirm before it is removed. This option only appears when you are browsing a playlist.
 - **Remove Playlist** - Removes the entire playlist you are browsing. You will be asked to confirm before it is removed. This option only appears when you are browsing a playlist (not History or Favorites).
+- **Remove Game** - Permanently deletes the game file and removes it from all playlists, History, and Favorites. You will be asked to confirm before it is removed. This option appears when you have a game highlighted in a folder, History, Favorites, a playlist, or the Game Switcher. Your saves, screenshots, and other files are not touched.
 
 When you are browsing the playlists list (not inside a specific playlist), the Options menu will show:
 
