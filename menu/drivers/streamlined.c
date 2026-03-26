@@ -267,7 +267,8 @@ typedef enum
    STREAMLINED_VIEW_GAME_LIST_OPTIONS, /* Context-sensitive options menu */
    STREAMLINED_VIEW_RANDOM_PREVIEW,   /* Random game preview before launch */
    STREAMLINED_VIEW_CONFIRM_REMOVE,   /* Confirmation before removing from history */
-   STREAMLINED_VIEW_PLAYLIST_PICKER   /* Pick a playlist to add a game to */
+   STREAMLINED_VIEW_PLAYLIST_PICKER,  /* Pick a playlist to add a game to */
+   STREAMLINED_VIEW_CREATE_PLAYLIST   /* Text input for new playlist name */
 } streamlined_view_type_t;
 
 /* Per-view data stored in a tagged union */
@@ -586,6 +587,10 @@ static void streamlined_glo_pop_to_source(
 static void streamlined_populate_random_preview(streamlined_t *strm);
 static void streamlined_glo_confirm_remove(streamlined_t *strm);
 static void streamlined_populate_confirm_remove(streamlined_t *strm);
+static void streamlined_playlist_config_init(
+      playlist_config_t *config, const char *path);
+static void streamlined_glo_create_playlist(streamlined_t *strm);
+static void streamlined_populate_create_playlist(streamlined_t *strm);
 static void streamlined_populate_core_selection(
       streamlined_t *strm, const char *content_path);
 static file_list_t *streamlined_get_and_clear_menu_list(void);
@@ -2957,6 +2962,103 @@ static void streamlined_glo_add_to_playlist(streamlined_t *strm)
          picker->data.playlist_picker.source_playlist_path);
 }
 
+static void streamlined_populate_create_playlist(streamlined_t *strm)
+{
+   file_list_t *list = streamlined_get_and_clear_menu_list();
+   if (!list)
+      return;
+   menu_entries_append(list,
+         "Type a name and press Done",
+         "",
+         MSG_UNKNOWN,
+         FILE_TYPE_NONE,
+         0, 0, NULL);
+}
+
+/*
+ * Keyboard callback for the "Create a new playlist" GLO action.
+ * Called when the native keyboard is dismissed with a result (or cancelled).
+ */
+static void streamlined_create_playlist_cb(void *userdata, const char *line)
+{
+   struct menu_state *menu_st;
+   streamlined_t *strm;
+   settings_t *settings;
+   char path[PATH_MAX_LENGTH];
+   size_t _len;
+
+   menu_input_dialog_end();
+
+   menu_st = menu_state_get_ptr();
+   strm    = (streamlined_t*)menu_st->userdata;
+
+   if (!strm)
+      return;
+
+   /* Cancel or empty — pop back to GLO */
+   if (!line || !*line)
+   {
+      streamlined_return_to_glo(strm, menu_st, false);
+      return;
+   }
+
+   settings = config_get_ptr();
+   if (!settings)
+      return;
+
+   /* Build path: <playlist_dir>/<name>.lpl */
+   _len = fill_pathname_join_special(path,
+         settings->paths.directory_playlist, line, sizeof(path));
+   strlcpy(path + _len, ".lpl", sizeof(path) - _len);
+
+   /* Check if already exists — show error and return to GLO */
+   if (path_is_valid(path))
+   {
+      runloop_msg_queue_push(
+            "A playlist with that name already exists",
+            strlen("A playlist with that name already exists"),
+            1, 180, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT,
+            MESSAGE_QUEUE_CATEGORY_INFO);
+      streamlined_return_to_glo(strm, menu_st, false);
+      return;
+   }
+
+   /* Create empty playlist file directly — playlist_write_file() requires
+    * the internal MOD flag which isn't set on a freshly init'd playlist */
+   filestream_write_file(path,
+         "{\"version\": \"1.5\", \"items\": []}\n",
+         STRLEN_CONST("{\"version\": \"1.5\", \"items\": []}\n"));
+
+   /* Pop CREATE_PLAYLIST, then pop GLO, return to PLAYLISTS */
+   streamlined_view_pop(&strm->view_stack);
+   streamlined_glo_pop_to_source(strm, menu_st);
+}
+
+/*
+ * GLO action: push the CREATE_PLAYLIST view and open the native keyboard
+ * for the user to enter a new playlist name.
+ */
+static void streamlined_glo_create_playlist(streamlined_t *strm)
+{
+   menu_input_ctx_line_t line;
+   streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
+
+   if (!glo || glo->type != STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+      return;
+
+   streamlined_view_push(&strm->view_stack,
+         STREAMLINED_VIEW_CREATE_PLAYLIST);
+   streamlined_populate_create_playlist(strm);
+
+   line.label         = "New Playlist";
+   line.label_setting = NULL;
+   line.type          = 0;
+   line.idx           = 0;
+   line.cb            = streamlined_create_playlist_cb;
+   menu_input_dialog_start(&line);
+}
+
 /*
  * GLO action: pick a random game and push a preview view.
  * The preview view lets the user accept (A/X) or decline (B) the pick.
@@ -3527,6 +3629,9 @@ static void streamlined_render_menu(streamlined_t *strm,
       case STREAMLINED_VIEW_PLAYLIST_PICKER:
          strlcpy(title_buf, "Add to Playlist", sizeof(title_buf));
          break;
+      case STREAMLINED_VIEW_CREATE_PLAYLIST:
+         strlcpy(title_buf, "New Playlist", sizeof(title_buf));
+         break;
       case STREAMLINED_VIEW_CONFIRM_REMOVE:
          if (view->data.confirm_remove.source_type
                == STREAMLINED_VIEW_FAVORITES)
@@ -3688,7 +3793,8 @@ static void streamlined_render_menu(streamlined_t *strm,
             || vtype == STREAMLINED_VIEW_MAIN_SETTINGS
             || vtype == STREAMLINED_VIEW_GAME_LIST_OPTIONS
             || vtype == STREAMLINED_VIEW_CONFIRM_REMOVE
-            || vtype == STREAMLINED_VIEW_PLAYLIST_PICKER)
+            || vtype == STREAMLINED_VIEW_PLAYLIST_PICKER
+            || vtype == STREAMLINED_VIEW_CREATE_PLAYLIST)
       {
          entry_label = entry.path;
          /* Core Options has empty path - use rich_label instead */
@@ -3868,7 +3974,8 @@ static void streamlined_render_menu(streamlined_t *strm,
             ok_key = "A";
             if (vtype == STREAMLINED_VIEW_GAME_LIST_OPTIONS
                   || vtype == STREAMLINED_VIEW_CONFIRM_REMOVE
-                  || vtype == STREAMLINED_VIEW_PLAYLIST_PICKER)
+                  || vtype == STREAMLINED_VIEW_PLAYLIST_PICKER
+                  || vtype == STREAMLINED_VIEW_CREATE_PLAYLIST)
                ok_str = "Select";
             else if ((vtype == STREAMLINED_VIEW_MAIN_MENU
                   || streamlined_is_game_view(vtype))
@@ -5169,25 +5276,34 @@ static void streamlined_user_playlist_free(streamlined_t *strm)
    }
 }
 
+/*
+ * Initialize a playlist_config_t with standard settings.
+ * Shared by playlist loading, playlist picker, and playlist creation.
+ */
+static void streamlined_playlist_config_init(
+      playlist_config_t *config, const char *path)
+{
+   settings_t *settings = config_get_ptr();
+   memset(config, 0, sizeof(*config));
+   config->capacity            = COLLECTION_SIZE;
+   config->old_format          = settings->bools.playlist_use_old_format;
+   config->compress            = settings->bools.playlist_compression;
+   config->fuzzy_archive_match = settings->bools.playlist_fuzzy_archive_match;
+   playlist_config_set_base_content_directory(config,
+         settings->bools.playlist_portable_paths
+         ? settings->paths.directory_menu_content : NULL);
+   playlist_config_set_path(config, path);
+}
+
 /* Load a user playlist from a .lpl file */
 static bool streamlined_load_user_playlist(
       streamlined_t *strm, const char *playlist_path)
 {
-   settings_t *settings = config_get_ptr();
    playlist_config_t config;
 
    streamlined_user_playlist_free(strm);
 
-   memset(&config, 0, sizeof(config));
-   config.capacity            = COLLECTION_SIZE;
-   config.old_format          = settings->bools.playlist_use_old_format;
-   config.compress            = settings->bools.playlist_compression;
-   config.fuzzy_archive_match = settings->bools.playlist_fuzzy_archive_match;
-   playlist_config_set_base_content_directory(&config,
-         settings->bools.playlist_portable_paths
-         ? settings->paths.directory_menu_content : NULL);
-   playlist_config_set_path(&config, playlist_path);
-
+   streamlined_playlist_config_init(&config, playlist_path);
    strm->user_playlist = playlist_init(&config);
    return strm->user_playlist != NULL;
 }
@@ -5322,6 +5438,21 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
          menu_entries_append(list,
                "Remove from Playlist",
                "glo_remove_from_playlist",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
+   /* "Create a new playlist" — available when browsing playlists list */
+   if (view)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_PLAYLISTS)
+      {
+         menu_entries_append(list,
+               "Create a new playlist",
+               "glo_create_playlist",
                MSG_UNKNOWN,
                FILE_TYPE_NONE,
                0, 0, NULL);
@@ -6077,6 +6208,10 @@ static void streamlined_populate_entries(void *data,
          {
             streamlined_populate_playlist_list_filtered(strm,
                   view->data.playlist_picker.source_playlist_path);
+         }
+         else if (view && view->type == STREAMLINED_VIEW_CREATE_PLAYLIST)
+         {
+            streamlined_populate_create_playlist(strm);
          }
          else
          {
@@ -7278,6 +7413,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             else if (string_is_equal(sel_entry.label,
                   "glo_remove_from_playlist"))
                streamlined_glo_confirm_remove(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_create_playlist"))
+               streamlined_glo_create_playlist(strm);
 
             return 0;
          }
@@ -7311,16 +7449,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                bool playlist_sort_alphabetical;
 
                /* Load target playlist */
-               memset(&config, 0, sizeof(config));
-               config.capacity            = COLLECTION_SIZE;
-               config.old_format          = settings->bools.playlist_use_old_format;
-               config.compress            = settings->bools.playlist_compression;
-               config.fuzzy_archive_match = settings->bools.playlist_fuzzy_archive_match;
-               playlist_config_set_base_content_directory(&config,
-                     settings->bools.playlist_portable_paths
-                     ? settings->paths.directory_menu_content : NULL);
-               playlist_config_set_path(&config, playlist_path);
-
+               streamlined_playlist_config_init(&config, playlist_path);
                target_pl = playlist_init(&config);
                if (!target_pl)
                   return 0;
@@ -7376,6 +7505,17 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
             return generic_menu_entry_action(userdata, entry, i, action);
          return 0;  /* Block all other input */
+      }
+
+      case STREAMLINED_VIEW_CREATE_PLAYLIST:
+      {
+         if (action == MENU_ACTION_CANCEL)
+         {
+            menu_input_dialog_end();
+            streamlined_return_to_glo(strm, menu_st, false);
+            return 0;
+         }
+         return 0;  /* Block all input — keyboard handles it */
       }
 
       case STREAMLINED_VIEW_CONFIRM_REMOVE:

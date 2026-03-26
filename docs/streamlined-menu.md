@@ -89,6 +89,10 @@ When you have a game highlighted — in a folder, History, Favorites, a playlist
 - **Remove from Favorites** - Removes the game from your favorites. You will be asked to confirm before it is removed. This option only appears when you are browsing Favorites.
 - **Remove from Playlist** - Removes the game from the playlist you are browsing. You will be asked to confirm before it is removed. This option only appears when you are browsing a playlist.
 
+When you are browsing the playlists list (not inside a specific playlist), the Options menu will show:
+
+- **Create a new playlist** - Opens a keyboard so you can type a name for a new playlist. Press Done to create it, or cancel to go back. If a playlist with that name already exists, you will see an error message and can try a different name.
+
 Press **B** to close the Options menu and go back to what you were doing before.
 
 ## The Quick Menu (Pause Menu)
