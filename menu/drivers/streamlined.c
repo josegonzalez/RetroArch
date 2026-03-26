@@ -89,6 +89,15 @@
 #include <CoreText/CoreText.h>
 #endif
 
+/* Triangle strip pill rendering: available on backends that support
+ * arbitrary vertex counts (GL, Metal, Vulkan, D3D). Exotic backends
+ * (GDI, 3DS, Switch NX, PSP, Wii) fall back to the span-based approach. */
+#if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_METAL) || \
+    defined(HAVE_VULKAN) || defined(HAVE_D3D9) || defined(HAVE_D3D10) || \
+    defined(HAVE_D3D11) || defined(HAVE_D3D12)
+#define STREAMLINED_PILL_TRIANGLE_STRIP
+#endif
+
 /* ======================================================================
  * CONFIGURATION
  * ====================================================================== */
@@ -112,6 +121,9 @@ static uint32_t streamlined_color_text        = 0xFFFFFFFF;  /* White (RGBA pack
 static uint32_t streamlined_color_text_dark   = 0x000000FF;  /* Black (RGBA packed) */
 static uint32_t streamlined_color_text_muted  = 0xAAAAAAFF;  /* Light gray (RGBA packed) */
 static uint32_t streamlined_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packed) */
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+static float streamlined_color_hint_bg[16]   = STREAMLINED_SOLID_COLOR(1.0f, 1.0f, 1.0f, 0.08f);
+#endif
 
 /* Layout constants - base sizes at 1.0x scale factor */
 #define STREAMLINED_BASE_FONT_SIZE     32     /* Base font size in pixels */
@@ -141,6 +153,12 @@ static uint32_t streamlined_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packe
 #define STREAMLINED_FRAME_CHIN_BASE    28      /* Frame bottom chin in base pixels */
 #define STREAMLINED_DOT_RADIUS_BASE    4       /* Dot indicator radius in base pixels */
 #define STREAMLINED_DOT_SPACING_BASE   16      /* Dot indicator spacing in base pixels */
+
+/* Triangle strip pill geometry */
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+#define STREAMLINED_PILL_ARC_SEGMENTS  64  /* Segments per semicircle (angle-based, uniform arc distribution) */
+#define STREAMLINED_PILL_MAX_VERTS     (4 * (STREAMLINED_PILL_ARC_SEGMENTS + 1))
+#endif
 
 /* Footer area constants (base sizes before scaling) */
 #define STREAMLINED_FOOTER_HEIGHT_BASE 78.0f   /* Footer area height */
@@ -439,6 +457,11 @@ typedef struct
    gfx_thumbnail_t game_switcher_thumbnail;
    char game_switcher_thumbnail_path[PATH_MAX_LENGTH];
 
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+   /* 1x1 white texture for triangle strip pill rendering */
+   uintptr_t white_texture;
+#endif
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -707,41 +730,19 @@ static void streamlined_draw_bg(streamlined_t *strm,
          streamlined_color_bg, NULL);
 }
 
-static void streamlined_draw_filled_circle(streamlined_t *strm,
-      gfx_display_t *p_disp, void *userdata,
-      int cx, int cy, int radius,
-      unsigned video_width, unsigned video_height,
-      float *color)
-{
-   int y;
-   float r_sq = (float)(radius * radius);
-
-   /* Draw circle as horizontal spans - much faster than per-pixel */
-   for (y = -radius; y <= radius; y++)
-   {
-      float y_sq = (float)(y * y);
-      float x_span = sqrtf(r_sq - y_sq);
-      int x_start = (int)(-x_span + 0.5f);
-      int x_end = (int)(x_span + 0.5f);
-      int span_width = x_end - x_start;
-
-      if (span_width > 0)
-      {
-         gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
-               cx + x_start, cy + y, span_width, 1,
-               video_width, video_height, color, NULL);
-      }
-   }
-}
-
 /*
  * Draw a rounded pill shape (stadium/discorectangle).
- * Composed of: left semicircle + center rectangle + right semicircle.
- * The radius is derived from height/2, creating perfect semicircles at ends.
  *
  *   ╭───────────────────╮
  *   │ O               O │  <- semicircles at each end
  *   ╰───────────────────╯
+ *
+ * Triangle strip path (capable backends): draws the entire shape as a single
+ * triangle strip by sweeping left-to-right and emitting top/bottom vertex
+ * pairs along the semicircular arcs, with 1 GPU draw call total.
+ *
+ * Fallback path (exotic backends): composes the shape from two filled circles
+ * (horizontal span quads) plus a center rectangle.
  */
 static void streamlined_draw_rounded_pill(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
@@ -749,27 +750,155 @@ static void streamlined_draw_rounded_pill(streamlined_t *strm,
       unsigned video_width, unsigned video_height,
       float *color)
 {
-   int radius = height / 2;
-   int rect_x = x + radius;
-   int rect_width = width - height;
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+   float verts[STREAMLINED_PILL_MAX_VERTS * 2];
+   float colors[STREAMLINED_PILL_MAX_VERTS * 4];
+   float texcoords[STREAMLINED_PILL_MAX_VERTS * 2];
+   int num_verts = 0;
+   int i;
+   int radius;
+   float r_f, w_f, h_f;
+   gfx_display_ctx_draw_t draw;
+   struct video_coords coords;
+   gfx_display_ctx_driver_t *dispctx;
 
-   /* Left semicircle */
-   streamlined_draw_filled_circle(strm, p_disp, userdata,
-         x + radius, y + radius, radius,
-         video_width, video_height, color);
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
-   /* Right semicircle */
-   streamlined_draw_filled_circle(strm, p_disp, userdata,
-         x + width - radius, y + radius, radius,
-         video_width, video_height, color);
+   if (width <= 0 || height <= 0)
+      return;
 
-   /* Center rectangle (only if pill is wide enough) */
-   if (rect_width > 0)
+   dispctx = p_disp->dispctx;
+   if (!dispctx || !dispctx->draw)
+      return;
+
+   radius = height / 2;
+   if (radius > width / 2)
+      radius = width / 2;
+
+   r_f  = (float)radius;
+   w_f  = (float)width;
+   h_f  = (float)height;
+
+   /* Left semicircle: angle from π (leftmost) to π/2 (transition to straight)
+    * Angle-based sampling gives uniform arc distribution for smooth curves */
+   for (i = 0; i <= STREAMLINED_PILL_ARC_SEGMENTS; i++)
    {
-      gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
-            rect_x, y, rect_width, height,
-            video_width, video_height, color, NULL);
+      float theta = (float)M_PI - (float)i * ((float)M_PI * 0.5f)
+            / (float)STREAMLINED_PILL_ARC_SEGMENTS;
+      float cx    = r_f * (1.0f + cosf(theta));
+      float sy    = r_f * sinf(theta);
+      float nx    = cx / w_f;
+      float n_top = 1.0f - (r_f - sy) / h_f;
+      float n_bot = 1.0f - (r_f + sy) / h_f;
+
+      verts[num_verts * 2]     = nx;
+      verts[num_verts * 2 + 1] = n_bot;
+      num_verts++;
+      verts[num_verts * 2]     = nx;
+      verts[num_verts * 2 + 1] = n_top;
+      num_verts++;
    }
+
+   /* Right semicircle: angle from π/2 (transition) to 0 (rightmost) */
+   for (i = 0; i <= STREAMLINED_PILL_ARC_SEGMENTS; i++)
+   {
+      float theta = (float)M_PI * 0.5f - (float)i * ((float)M_PI * 0.5f)
+            / (float)STREAMLINED_PILL_ARC_SEGMENTS;
+      float cx    = (float)(width - radius) + r_f * cosf(theta);
+      float sy    = r_f * sinf(theta);
+      float nx    = cx / w_f;
+      float n_top = 1.0f - (r_f - sy) / h_f;
+      float n_bot = 1.0f - (r_f + sy) / h_f;
+
+      verts[num_verts * 2]     = nx;
+      verts[num_verts * 2 + 1] = n_bot;
+      num_verts++;
+      verts[num_verts * 2]     = nx;
+      verts[num_verts * 2 + 1] = n_top;
+      num_verts++;
+   }
+
+   /* Fill color array: replicate RGBA for every vertex */
+   for (i = 0; i < num_verts; i++)
+   {
+      colors[i * 4]     = color[0];
+      colors[i * 4 + 1] = color[1];
+      colors[i * 4 + 2] = color[2];
+      colors[i * 4 + 3] = color[3];
+   }
+
+   /* Fill texcoord array: all zeros (white texture, UVs don't matter) */
+   memset(texcoords, 0, sizeof(float) * num_verts * 2);
+
+   coords.vertices      = num_verts;
+   coords.vertex        = verts;
+   coords.tex_coord     = texcoords;
+   coords.lut_tex_coord = NULL;
+   coords.color         = colors;
+
+   draw.x               = x;
+   draw.y               = (int)video_height - y - height;
+   draw.width           = width;
+   draw.height          = height;
+   draw.coords          = &coords;
+   draw.matrix_data     = NULL;
+   draw.texture         = strm->white_texture;
+   draw.prim_type       = GFX_DISPLAY_PRIM_TRIANGLESTRIP;
+   draw.pipeline_id     = 0;
+   draw.scale_factor    = 1.0f;
+   draw.rotation        = 0.0f;
+
+   if (dispctx->blend_begin)
+      dispctx->blend_begin(userdata);
+   dispctx->draw(&draw, userdata, video_width, video_height);
+   if (dispctx->blend_end)
+      dispctx->blend_end(userdata);
+#else
+   /* Fallback: span-based approach for exotic backends */
+   {
+      int row;
+      int radius    = height / 2;
+      int rect_x    = x + radius;
+      int rect_width = width - height;
+      float r_sq    = (float)(radius * radius);
+
+      /* Left semicircle */
+      for (row = -radius; row <= radius; row++)
+      {
+         float y_sq = (float)(row * row);
+         float x_span = sqrtf(r_sq - y_sq);
+         int x_start = (int)(-x_span + 0.5f);
+         int x_end   = (int)( x_span + 0.5f);
+         int span_w  = x_end - x_start;
+         if (span_w > 0)
+            gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+                  x + radius + x_start, y + radius + row, span_w, 1,
+                  video_width, video_height, color, NULL);
+      }
+
+      /* Right semicircle */
+      for (row = -radius; row <= radius; row++)
+      {
+         float y_sq = (float)(row * row);
+         float x_span = sqrtf(r_sq - y_sq);
+         int x_start = (int)(-x_span + 0.5f);
+         int x_end   = (int)( x_span + 0.5f);
+         int span_w  = x_end - x_start;
+         if (span_w > 0)
+            gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+                  x + width - radius + x_start, y + radius + row, span_w, 1,
+                  video_width, video_height, color, NULL);
+      }
+
+      /* Center rectangle */
+      if (rect_width > 0)
+         gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+               rect_x, y, rect_width, height,
+               video_width, video_height, color, NULL);
+   }
+#endif
 }
 
 static void streamlined_draw_text(streamlined_t *strm,
@@ -2056,6 +2185,8 @@ static void streamlined_load_slot_thumbnail(streamlined_t *strm, int preview_slo
 
 /*
  * Draw a footer button hint: rounded pill with key letter + label text.
+ * On capable backends, also draws a semi-transparent background pill
+ * behind the entire hint with equal padding on left and right.
  * Returns total width consumed (pill + gap + label).
  */
 static float streamlined_draw_footer_pill(streamlined_t *strm,
@@ -2070,7 +2201,23 @@ static float streamlined_draw_footer_pill(streamlined_t *strm,
    int label_w = font_driver_get_message_width(
          strm->font_small.font, label, strlen(label), 1.0f);
    int pill_w  = key_w + (int)(pill_pad * 2.0f);
+   float total_w = (float)pill_w + gap + (float)label_w;
 
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+   /* Semi-transparent outer pill behind the entire hint */
+   {
+      int outer_pad   = (int)pill_pad;
+      int outer_pad_r = outer_pad * 2;  /* extra room after label text */
+      int outer_w     = outer_pad + (int)total_w + outer_pad_r;
+      int outer_h     = (int)pill_h + outer_pad * 2;
+      streamlined_draw_rounded_pill(strm, p_disp, userdata,
+            (int)x - outer_pad, (int)pill_y - outer_pad,
+            outer_w, outer_h,
+            video_width, video_height, streamlined_color_hint_bg);
+   }
+#endif
+
+   /* Opaque inner pill around the key letter */
    streamlined_draw_rounded_pill(strm, p_disp, userdata,
          (int)x, (int)pill_y, pill_w, (int)pill_h,
          video_width, video_height, streamlined_color_selection);
@@ -2089,7 +2236,7 @@ static float streamlined_draw_footer_pill(streamlined_t *strm,
          streamlined_color_text,
          TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
-   return (float)pill_w + gap + (float)label_w;
+   return total_w;
 }
 
 /*
@@ -2228,8 +2375,8 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
       }
       else
       {
-         streamlined_draw_filled_circle(strm, p_disp, userdata,
-               dot_cx, cy, r,
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               dot_cx - r, cy - r, r * 2, r * 2,
                video_width, video_height, color);
       }
    }
@@ -6185,6 +6332,19 @@ static void streamlined_context_reset(void *data, bool is_threaded)
 
    gfx_display_init_white_texture();
 
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+   /* Create own 1x1 white texture for triangle strip pill rendering */
+   {
+      struct texture_image ti;
+      static const uint8_t white_data[] = { 0xff, 0xff, 0xff, 0xff };
+      ti.width  = 1;
+      ti.height = 1;
+      ti.pixels = (uint32_t*)&white_data;
+      video_driver_texture_load(&ti, TEXTURE_FILTER_NEAREST,
+            &strm->white_texture);
+   }
+#endif
+
 }
 
 static void streamlined_context_destroy(void *data)
@@ -6201,6 +6361,11 @@ static void streamlined_context_destroy(void *data)
       /* Clean up artwork thumbnail */
       gfx_thumbnail_reset(&strm->artwork.thumbnail);
    }
+
+#ifdef STREAMLINED_PILL_TRIANGLE_STRIP
+   if (strm && strm->white_texture)
+      video_driver_texture_unload(&strm->white_texture);
+#endif
 
    gfx_display_deinit_white_texture();
 }
