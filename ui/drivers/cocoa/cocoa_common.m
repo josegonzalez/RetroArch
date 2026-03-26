@@ -447,6 +447,12 @@ void rarch_stop_draw_observer(void)
 {
     for (UIPress *press in presses)
     {
+       /* Forward Menu release to UIKit when at top so backgrounding completes */
+       if (press.type == UIPressTypeMenu && [self menuIsAtTop])
+       {
+          [super pressesEnded:presses withEvent:event];
+          return;
+       }
        if (press.type == UIPressTypeSelect || press.type == UIPressTypePlayPause)
           [self sendKeyForPress:press.type down:false];
        else
