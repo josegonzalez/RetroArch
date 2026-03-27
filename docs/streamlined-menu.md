@@ -176,6 +176,28 @@ Here is a quick summary of the controls:
 
 At the bottom of every screen, you will see a reminder showing **B** for Back on the left and **A** for OK (or "Play" when a game is highlighted) on the right.
 
+## Touch and Mouse Controls
+
+The Streamlined Menu works with touchscreens and mice in addition to controllers.
+
+**Touch:**
+
+- **Tap** an item in the list to select and activate it (same as pressing **A**)
+- **Tap** the button hints at the bottom of the screen to trigger them — for example, tap **B Back** to go back, or tap **A Play** to play the highlighted game
+- **Long press** (hold your finger on a game for about one second) to open the Options menu for that game
+- **Swipe right** to go back to the previous screen (same as pressing **B**)
+- **Swipe left or right** in the Game Switcher to flip through your recent games
+- **Swipe left or right** when on Save or Load to switch save slots
+- **Drag up or down** to scroll through long lists
+
+**Mouse:**
+
+- **Hover** over items to highlight them — the selection follows your cursor
+- **Click** an item to select and activate it
+- **Click** the button hints at the bottom of the screen to trigger them
+- **Right-click** anywhere to go back (same as pressing **B**)
+- **Scroll wheel** to move up and down through lists
+
 ## Returning to Your Game
 
 When you quit a game and go back to the main screen, the menu remembers where you were. It takes you right back to the same folder and highlights the same game you were playing. That way you can easily pick up where you left off or choose a different game from the same folder.

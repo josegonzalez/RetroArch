@@ -462,6 +462,20 @@ typedef struct
    uintptr_t white_texture;
 #endif
 
+   /* Pointer/touch state (snapshot copied each frame) */
+   menu_input_pointer_t pointer;
+
+   /* Cached footer pill hit regions for touch/mouse input */
+   struct {
+      float back_x, back_w;
+      float ok_x, ok_w;
+      float extra_x, extra_w;
+      bool  extra_visible;
+      float footer_top_y;
+      enum menu_action ok_action;
+      enum menu_action extra_action;
+   } footer_hit;
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -670,6 +684,13 @@ static void streamlined_draw_folder_artwork(
 static void streamlined_artwork_start_scan(
       streamlined_t *strm, const char *folder_path, const char *core_path);
 static void streamlined_artwork_reset(streamlined_artwork_t *art);
+
+/* Pointer/touch helpers */
+static size_t streamlined_entry_index_from_y(
+      streamlined_t *strm, int y,
+      unsigned video_height, size_t list_size, size_t selection);
+static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
+      size_t i, enum menu_action action);
 
 /* Shared drawing helpers */
 static void streamlined_draw_thumbnail_frame(streamlined_t *strm,
@@ -2629,12 +2650,19 @@ static void streamlined_draw_fullscreen_preview(streamlined_t *strm,
    {
       float ok_pill_x;
       int ok_key_w, ok_label_w, ok_pill_w;
+      float back_total_w, ok_total_w;
+
+      /* Cache footer top for pointer hit-testing */
+      strm->footer_hit.footer_top_y = (float)video_height - footer_height;
+      strm->footer_hit.extra_visible = false;
 
       /* Left: [B] Back */
-      streamlined_draw_footer_pill(strm, p_disp, userdata,
+      back_total_w = streamlined_draw_footer_pill(strm, p_disp, userdata,
             video_width, video_height,
             footer_margin, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
             "B", "Back");
+      strm->footer_hit.back_x = footer_margin - pill_pad;
+      strm->footer_hit.back_w = back_total_w + pill_pad * 3.0f;
 
       /* Right: OK button */
       ok_key_w   = font_driver_get_message_width(
@@ -2645,10 +2673,13 @@ static void streamlined_draw_fullscreen_preview(streamlined_t *strm,
       ok_pill_x  = (float)video_width - footer_margin
             - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
-      streamlined_draw_footer_pill(strm, p_disp, userdata,
+      ok_total_w = streamlined_draw_footer_pill(strm, p_disp, userdata,
             video_width, video_height,
             ok_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
             ok_key, ok_str);
+      strm->footer_hit.ok_x = ok_pill_x - pill_pad;
+      strm->footer_hit.ok_w = ok_total_w + pill_pad * 3.0f;
+      strm->footer_hit.ok_action = MENU_ACTION_OK;
 
       /* Optional extra button (e.g. [X] Resume) to the left of OK */
       if (extra_key && extra_str)
@@ -2660,11 +2691,16 @@ static void streamlined_draw_fullscreen_preview(streamlined_t *strm,
          int ex_pill_w  = ex_key_w + (int)(pill_pad * 2.0f);
          float ex_pill_x = ok_pill_x - pill_text_gap
                - (float)ex_label_w - pill_text_gap - (float)ex_pill_w;
+         float ex_total_w;
 
-         streamlined_draw_footer_pill(strm, p_disp, userdata,
+         ex_total_w = streamlined_draw_footer_pill(strm, p_disp, userdata,
                video_width, video_height,
                ex_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
                extra_key, extra_str);
+         strm->footer_hit.extra_x = ex_pill_x - pill_pad;
+         strm->footer_hit.extra_w = ex_total_w + pill_pad * 3.0f;
+         strm->footer_hit.extra_visible = true;
+         strm->footer_hit.extra_action = MENU_ACTION_SCAN;
       }
 
       /* Center: footer title */
@@ -4259,6 +4295,29 @@ static void streamlined_render_menu(streamlined_t *strm,
       char *ptr;
       bool is_selected = ((start_idx + i) == selection);
 
+      /* Pointer tracking: update menu_input->ptr and mouse hover selection */
+      if (strm->pointer.type != MENU_POINTER_DISABLED)
+      {
+         int py = strm->pointer.y;
+         int px = strm->pointer.x;
+         if (py >= y && py < y + item_height
+               && px >= 0 && px < (int)video_width)
+         {
+            menu_input_t *mi = &menu_st->input_state;
+            mi->ptr = (unsigned)(start_idx + i);
+
+            if (strm->pointer.type == MENU_POINTER_MOUSE
+                  && (start_idx + i) != selection
+                  && strm->pointer.y_accel < strm->scale_factor
+                  && strm->pointer.y_accel > -strm->scale_factor)
+            {
+               menu_st->selection_ptr = start_idx + i;
+               selection = start_idx + i;
+               is_selected = true;
+            }
+         }
+      }
+
       /* Calculate consistent text position */
       int pill_height = (int)(strm->font_size * STREAMLINED_PILL_HEIGHT_RATIO);
       int pill_y = y + (item_height - pill_height) / 2;
@@ -4474,11 +4533,22 @@ static void streamlined_render_menu(streamlined_t *strm,
          }
       }
 
+      /* Cache footer top for pointer hit-testing */
+      strm->footer_hit.footer_top_y = (float)video_height - footer_height;
+      strm->footer_hit.extra_visible = false;
+
       /* Left side: [margin] [B pill] [gap] Back */
-      left_end = footer_margin + streamlined_draw_footer_pill(strm,
-            p_disp, userdata, video_width, video_height,
-            footer_margin, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
-            back_key, back_str);
+      {
+         float back_total_w = streamlined_draw_footer_pill(strm,
+               p_disp, userdata, video_width, video_height,
+               footer_margin, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
+               back_key, back_str);
+         left_end = footer_margin + back_total_w;
+
+         /* Cache back pill outer hit region */
+         strm->footer_hit.back_x = footer_margin - pill_pad;
+         strm->footer_hit.back_w = back_total_w + pill_pad * 3.0f;
+      }
 
       /* Right side hint(s) */
       {
@@ -4489,13 +4559,20 @@ static void streamlined_render_menu(streamlined_t *strm,
          int ok_label_w = font_driver_get_message_width(
                strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
          int ok_pill_w  = ok_key_w + (int)(pill_pad * 2.0f);
+         float ok_total_w;
          ok_pill_x = (float)video_width - footer_margin
                - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
-         streamlined_draw_footer_pill(strm, p_disp, userdata,
+         ok_total_w = streamlined_draw_footer_pill(strm, p_disp, userdata,
                video_width, video_height,
                ok_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
                ok_key, ok_str);
+
+         /* Cache OK pill hit region */
+         strm->footer_hit.ok_x = ok_pill_x - pill_pad;
+         strm->footer_hit.ok_w = ok_total_w + pill_pad * 3.0f;
+         strm->footer_hit.ok_action = string_is_equal(ok_key, "X")
+               ? MENU_ACTION_SCAN : MENU_ACTION_OK;
 
          /* When auto_load is OFF and auto save exists, draw (X) Resume
           * to the left of (A) Play */
@@ -4510,11 +4587,18 @@ static void streamlined_render_menu(streamlined_t *strm,
             int resume_pill_w  = resume_key_w + (int)(pill_pad * 2.0f);
             float resume_pill_x = ok_pill_x - pill_text_gap
                   - (float)resume_label_w - pill_text_gap - (float)resume_pill_w;
+            float resume_total_w;
 
-            streamlined_draw_footer_pill(strm, p_disp, userdata,
+            resume_total_w = streamlined_draw_footer_pill(strm, p_disp, userdata,
                   video_width, video_height,
                   resume_pill_x, pill_y, text_y, pill_h, pill_pad, pill_text_gap,
                   resume_key, resume_str);
+
+            /* Cache extra pill hit region */
+            strm->footer_hit.extra_x = resume_pill_x - pill_pad;
+            strm->footer_hit.extra_w = resume_total_w + pill_pad * 3.0f;
+            strm->footer_hit.extra_visible = true;
+            strm->footer_hit.extra_action = MENU_ACTION_SCAN;
          }
       }
 
@@ -6505,6 +6589,9 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
    if (strm->font_tiny.font)
       font_bind(&strm->font_tiny);
 
+   /* Snapshot pointer state for this frame */
+   menu_input_get_pointer_state(&strm->pointer);
+
    /* Interstitial screen: black background + centered text */
    if (strm->interstitial != STREAMLINED_INTERSTITIAL_NONE)
    {
@@ -6863,12 +6950,249 @@ static void streamlined_navigation_set(void *data, bool scroll) { }
 static void streamlined_navigation_clear(void *data, bool pending_push) { }
 static void streamlined_navigation_set_last(void *data) { }
 
+/*
+ * Compute the menu entry index from a screen y coordinate.
+ * Uses the same layout math as streamlined_render_menu.
+ * Returns (size_t)-1 if y is outside the entry area.
+ */
+static size_t streamlined_entry_index_from_y(
+      streamlined_t *strm, int y,
+      unsigned video_height, size_t list_size, size_t selection)
+{
+   int title_area   = strm->margin_y
+         + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_RATIO);
+   int item_height  = strm->font.line_height;
+   int footer_height = (int)(STREAMLINED_FOOTER_HEIGHT_BASE * strm->scale_factor);
+   size_t max_visible;
+   size_t start_idx;
+   int relative;
+
+   if (item_height <= 0)
+      item_height = 20;
+
+   max_visible = (video_height - title_area - footer_height) / item_height;
+   if (max_visible == 0)
+      max_visible = 1;
+
+   if (selection >= max_visible)
+      start_idx = selection - max_visible + 1;
+   else
+      start_idx = 0;
+
+   if (y < title_area || y >= (int)video_height - footer_height)
+      return (size_t)-1;
+
+   relative = (y - title_area) / item_height;
+   if (relative < 0)
+      return (size_t)-1;
+
+   {
+      size_t idx = start_idx + (size_t)relative;
+      if (idx >= list_size)
+         return (size_t)-1;
+      return idx;
+   }
+}
+
 static int streamlined_pointer_up(void *data,
       unsigned x, unsigned y, unsigned ptr,
       enum menu_input_pointer_gesture gesture,
       menu_file_list_cbs_t *cbs,
       menu_entry_t *entry, unsigned action)
 {
+   struct menu_state *menu_st = menu_state_get_ptr();
+   streamlined_t *strm;
+   streamlined_view_t *view;
+   streamlined_view_type_t vtype;
+   menu_list_t *menu_list;
+   size_t list_size, selection;
+
+   if (!menu_st)
+      return -1;
+   strm = (streamlined_t*)menu_st->userdata;
+   if (!strm)
+      return -1;
+   if (strm->interstitial != STREAMLINED_INTERSTITIAL_NONE)
+      return 0;
+
+   view = streamlined_view_current(&strm->view_stack);
+   if (!view)
+      return 0;
+   vtype = view->type;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return 0;
+   {
+      file_list_t *list = MENU_LIST_GET_SELECTION(menu_list, 0);
+      list_size = list ? list->size : 0;
+   }
+   selection = menu_st->selection_ptr;
+
+   /* RA_SETTINGS: delegate entirely to generic handler */
+   if (vtype == STREAMLINED_VIEW_RA_SETTINGS)
+   {
+      if (gesture == MENU_INPUT_GESTURE_TAP)
+      {
+         size_t idx = streamlined_entry_index_from_y(
+               strm, (int)y, strm->height, list_size, selection);
+         if (idx != (size_t)-1 && idx < list_size)
+         {
+            menu_st->selection_ptr = idx;
+            return generic_menu_entry_action(data, entry, idx,
+                  MENU_ACTION_SELECT);
+         }
+      }
+      return 0;
+   }
+
+   switch (gesture)
+   {
+      case MENU_INPUT_GESTURE_TAP:
+      case MENU_INPUT_GESTURE_SHORT_PRESS:
+      {
+         /* Region 1: Footer area - hit-test cached pill positions */
+         if ((int)y >= (int)strm->footer_hit.footer_top_y)
+         {
+            float fx = (float)x;
+
+            /* Back pill */
+            if (fx >= strm->footer_hit.back_x
+                  && fx < strm->footer_hit.back_x + strm->footer_hit.back_w)
+               return streamlined_entry_action(data, entry, selection,
+                     MENU_ACTION_CANCEL);
+
+            /* Extra pill (X Resume) - check before OK since it's to the left */
+            if (strm->footer_hit.extra_visible
+                  && fx >= strm->footer_hit.extra_x
+                  && fx < strm->footer_hit.extra_x + strm->footer_hit.extra_w)
+               return streamlined_entry_action(data, entry, selection,
+                     strm->footer_hit.extra_action);
+
+            /* OK pill */
+            if (fx >= strm->footer_hit.ok_x
+                  && fx < strm->footer_hit.ok_x + strm->footer_hit.ok_w)
+               return streamlined_entry_action(data, entry, selection,
+                     strm->footer_hit.ok_action);
+
+            return 0;
+         }
+
+         /* Region 2: Game switcher / random preview - tap central area */
+         if (vtype == STREAMLINED_VIEW_GAME_SWITCHER
+               || vtype == STREAMLINED_VIEW_RANDOM_PREVIEW)
+         {
+            if (gesture == MENU_INPUT_GESTURE_TAP)
+               return streamlined_entry_action(data, entry, selection,
+                     MENU_ACTION_OK);
+            return 0;
+         }
+
+         /* Region 3: Entry area */
+         {
+            size_t idx = streamlined_entry_index_from_y(
+                  strm, (int)y, strm->height, list_size, selection);
+            if (idx != (size_t)-1 && idx < list_size)
+            {
+               menu_st->selection_ptr = idx;
+
+               if (gesture == MENU_INPUT_GESTURE_TAP)
+               {
+                  menu_entry_t tap_entry;
+                  MENU_ENTRY_INITIALIZE(tap_entry);
+                  tap_entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
+                                   | MENU_ENTRY_FLAG_VALUE_ENABLED
+                                   | MENU_ENTRY_FLAG_LABEL_ENABLED;
+                  menu_entry_get(&tap_entry, 0, (unsigned)idx, NULL, true);
+
+                  return streamlined_entry_action(data, &tap_entry, idx,
+                        strm->footer_hit.ok_action);
+               }
+               /* SHORT_PRESS: just highlight, don't activate */
+            }
+         }
+         break;
+      }
+
+      case MENU_INPUT_GESTURE_LONG_PRESS:
+      {
+         /* Long press on entry = GLO (Y button) in game/main/playlists views */
+         bool supports_glo =
+               vtype == STREAMLINED_VIEW_FOLDER
+            || vtype == STREAMLINED_VIEW_HISTORY
+            || vtype == STREAMLINED_VIEW_FAVORITES
+            || vtype == STREAMLINED_VIEW_PLAYLIST
+            || vtype == STREAMLINED_VIEW_MAIN_MENU
+            || vtype == STREAMLINED_VIEW_PLAYLISTS;
+
+         if (supports_glo)
+         {
+            size_t idx = streamlined_entry_index_from_y(
+                  strm, (int)y, strm->height, list_size, selection);
+            if (idx != (size_t)-1 && idx < list_size)
+            {
+               menu_entry_t lp_entry;
+               menu_st->selection_ptr = idx;
+
+               MENU_ENTRY_INITIALIZE(lp_entry);
+               lp_entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
+                                | MENU_ENTRY_FLAG_VALUE_ENABLED
+                                | MENU_ENTRY_FLAG_LABEL_ENABLED;
+               menu_entry_get(&lp_entry, 0, (unsigned)idx, NULL, true);
+
+               return streamlined_entry_action(data, &lp_entry, idx,
+                     MENU_ACTION_SEARCH);
+            }
+         }
+
+         /* Game switcher: long press = GLO */
+         if (vtype == STREAMLINED_VIEW_GAME_SWITCHER)
+            return streamlined_entry_action(data, entry, selection,
+                  MENU_ACTION_SEARCH);
+
+         break;
+      }
+
+      case MENU_INPUT_GESTURE_SWIPE_RIGHT:
+      {
+         /* Game switcher: swipe right = previous game */
+         if (vtype == STREAMLINED_VIEW_GAME_SWITCHER)
+            return streamlined_entry_action(data, entry, selection,
+                  MENU_ACTION_LEFT);
+
+         /* Quick menu with slot selector: swipe right = previous slot */
+         if (vtype == STREAMLINED_VIEW_QUICK_MENU && strm->show_slot_selector)
+            return streamlined_entry_action(data, entry, selection,
+                  MENU_ACTION_LEFT);
+
+         /* Main menu: no action (already at root) */
+         if (vtype == STREAMLINED_VIEW_MAIN_MENU)
+            return 0;
+
+         /* All other views: swipe right = back */
+         return streamlined_entry_action(data, entry, selection,
+               MENU_ACTION_CANCEL);
+      }
+
+      case MENU_INPUT_GESTURE_SWIPE_LEFT:
+      {
+         /* Game switcher: swipe left = next game */
+         if (vtype == STREAMLINED_VIEW_GAME_SWITCHER)
+            return streamlined_entry_action(data, entry, selection,
+                  MENU_ACTION_RIGHT);
+
+         /* Quick menu with slot selector: swipe left = next slot */
+         if (vtype == STREAMLINED_VIEW_QUICK_MENU && strm->show_slot_selector)
+            return streamlined_entry_action(data, entry, selection,
+                  MENU_ACTION_RIGHT);
+
+         break;
+      }
+
+      default:
+         break;
+   }
+
    return 0;
 }
 
