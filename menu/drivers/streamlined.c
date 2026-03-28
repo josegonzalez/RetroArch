@@ -610,6 +610,10 @@ static bool streamlined_resolve_playlist_artwork(
 static void streamlined_populate_game_list_options(streamlined_t *strm);
 static void streamlined_glo_launch_without_resume(streamlined_t *strm);
 static void streamlined_glo_random_game(streamlined_t *strm);
+static size_t streamlined_list_playable_in_folder(
+      const char *folder_path, struct string_list **out_list,
+      size_t **out_playable);
+static size_t streamlined_count_playable_in_folder(const char *folder_path);
 static void streamlined_glo_add_to_favorites(streamlined_t *strm);
 static void streamlined_glo_add_to_playlist(streamlined_t *strm);
 static void streamlined_resolve_playlist_metadata(
@@ -2863,6 +2867,7 @@ static void streamlined_glo_pop_to_source(
                   strm->user_playlist, "No games in playlist");
             break;
          case STREAMLINED_VIEW_PLAYLISTS:
+            streamlined_user_playlist_free(strm);
             streamlined_populate_playlists_list(strm);
             break;
          case STREAMLINED_VIEW_GAME_SWITCHER:
@@ -3578,6 +3583,86 @@ static void streamlined_glo_create_playlist(streamlined_t *strm)
 }
 
 /*
+ * Scan a directory and build an array of indices into the returned
+ * string_list that point to playable entries (regular files + m3u folders).
+ * Returns the playable count.  Caller must free *out_list and *out_playable.
+ * On failure both outputs are set to NULL and 0 is returned.
+ */
+static size_t streamlined_list_playable_in_folder(
+      const char *folder_path, struct string_list **out_list,
+      size_t **out_playable)
+{
+   settings_t *settings = config_get_ptr();
+   struct string_list *str_list;
+   size_t *playable;
+   size_t count = 0;
+   unsigned j;
+
+   *out_list     = NULL;
+   *out_playable = NULL;
+
+   str_list = dir_list_new(folder_path, NULL, true,
+         settings->bools.show_hidden_files, true, false);
+   if (!str_list || str_list->size == 0)
+   {
+      if (str_list)
+         string_list_free(str_list);
+      return 0;
+   }
+
+   playable = (size_t *)calloc(str_list->size, sizeof(size_t));
+   if (!playable)
+   {
+      string_list_free(str_list);
+      return 0;
+   }
+
+   for (j = 0; j < str_list->size; j++)
+   {
+      const char *path = str_list->elems[j].data;
+      unsigned attr     = str_list->elems[j].attr.i;
+      const char *name  = path_basename(path);
+
+      if (!name || name[0] == '.')
+         continue;
+
+      if (attr == RARCH_DIRECTORY)
+      {
+         char m3u_path[PATH_MAX_LENGTH];
+         if (streamlined_detect_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+            playable[count++] = j;
+      }
+      else
+         playable[count++] = j;
+   }
+
+   if (count == 0)
+   {
+      free(playable);
+      string_list_free(str_list);
+      return 0;
+   }
+
+   *out_list     = str_list;
+   *out_playable = playable;
+   return count;
+}
+
+/* Convenience wrapper: count playable entries without keeping the arrays */
+static size_t streamlined_count_playable_in_folder(const char *folder_path)
+{
+   struct string_list *str_list = NULL;
+   size_t *playable = NULL;
+   size_t count = streamlined_list_playable_in_folder(
+         folder_path, &str_list, &playable);
+   if (playable)
+      free(playable);
+   if (str_list)
+      string_list_free(str_list);
+   return count;
+}
+
+/*
  * GLO action: pick a random game and push a preview view.
  * The preview view lets the user accept (A/X) or decline (B) the pick.
  */
@@ -3601,10 +3686,25 @@ static void streamlined_glo_random_game(streamlined_t *strm)
    source_type  = glo->data.game_list_options.source_type;
    source_count = glo->data.game_list_options.source_count;
 
+   /* Remap container-level sources to their effective game-list type */
+   if (source_type == STREAMLINED_VIEW_MAIN_MENU)
+   {
+      const char *item_path = glo->data.game_list_options.item_path;
+      if (!string_is_empty(item_path) && path_is_directory(item_path))
+         source_type = STREAMLINED_VIEW_FOLDER;
+      else if (string_is_equal(item_path, "streamlined_history"))
+         source_type = STREAMLINED_VIEW_HISTORY;
+      else if (string_is_equal(item_path, "streamlined_favorites"))
+         source_type = STREAMLINED_VIEW_FAVORITES;
+      else
+         return;
+   }
+   else if (source_type == STREAMLINED_VIEW_PLAYLISTS)
+      source_type = STREAMLINED_VIEW_PLAYLIST;
+
    /* Seed RNG with wall-clock time for varied results */
    srand((unsigned)time(NULL));
 
-   /* Peek at the source view below GLO (don't pop — RANDOM_PREVIEW goes on top) */
    content_path[0] = '\0';
    core_path[0]    = '\0';
    display_name[0] = '\0';
@@ -3614,60 +3714,34 @@ static void streamlined_glo_random_game(streamlined_t *strm)
       /* Scan directory and pick a random playable file */
       streamlined_view_t *source_view = (strm->view_stack.top > 0)
             ? &strm->view_stack.entries[strm->view_stack.top - 1] : NULL;
-      settings_t *settings       = config_get_ptr();
-      const char *folder_path    = source_view ? source_view->data.folder.folder_path : NULL;
-      const char *folder_core    = source_view ? source_view->data.folder.core_path : NULL;
-      struct string_list *str_list;
-      size_t *playable           = NULL;
-      size_t playable_count      = 0;
-      unsigned j;
+      const char *folder_path;
+      const char *folder_core;
+      struct string_list *str_list = NULL;
+      size_t *playable             = NULL;
+      size_t playable_count;
       int attempts;
+
+      /* When opened from inside a folder, peek at the FOLDER view below GLO.
+       * When opened from the main menu, the view below is MAIN_MENU —
+       * use the folder path and core stored in GLO data instead. */
+      if (source_view && source_view->type == STREAMLINED_VIEW_FOLDER)
+      {
+         folder_path = source_view->data.folder.folder_path;
+         folder_core = source_view->data.folder.core_path;
+      }
+      else
+      {
+         folder_path = glo->data.game_list_options.item_path;
+         folder_core = glo->data.game_list_options.core_path;
+      }
 
       if (!folder_path)
          return;
 
-      str_list = dir_list_new(folder_path, NULL, true,
-            settings->bools.show_hidden_files, true, false);
-      if (!str_list || str_list->size == 0)
-      {
-         if (str_list)
-            string_list_free(str_list);
-         return;
-      }
-
-      /* Build array of indices for playable entries (files + m3u folders) */
-      playable = (size_t *)calloc(str_list->size, sizeof(size_t));
-      if (!playable)
-      {
-         string_list_free(str_list);
-         return;
-      }
-
-      for (j = 0; j < str_list->size; j++)
-      {
-         const char *path = str_list->elems[j].data;
-         unsigned attr     = str_list->elems[j].attr.i;
-         const char *name  = path_basename(path);
-
-         if (!name || name[0] == '.')
-            continue;
-
-         if (attr == RARCH_DIRECTORY)
-         {
-            char m3u_path[PATH_MAX_LENGTH];
-            if (streamlined_detect_m3u_folder(path, m3u_path, sizeof(m3u_path)))
-               playable[playable_count++] = j;
-         }
-         else
-            playable[playable_count++] = j;
-      }
-
+      playable_count = streamlined_list_playable_in_folder(
+            folder_path, &str_list, &playable);
       if (playable_count < 2)
-      {
-         free(playable);
-         string_list_free(str_list);
          return;
-      }
 
       /* Try random picks until we find a valid game */
       for (attempts = 0; attempts < 10; attempts++)
@@ -5920,7 +5994,9 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
             || src == STREAMLINED_VIEW_HISTORY
             || src == STREAMLINED_VIEW_FAVORITES
             || src == STREAMLINED_VIEW_PLAYLIST
-            || src == STREAMLINED_VIEW_FOLDER)
+            || src == STREAMLINED_VIEW_FOLDER
+            || src == STREAMLINED_VIEW_MAIN_MENU
+            || src == STREAMLINED_VIEW_PLAYLISTS)
       {
          menu_entries_append(list,
                "Random Game",
@@ -7768,7 +7844,30 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (action == MENU_ACTION_SEARCH && entry)
          {
             streamlined_view_t *glo;
-   
+            size_t count = 0;
+            char folder_core[PATH_MAX_LENGTH];
+
+            folder_core[0] = '\0';
+
+            /* Compute source_count based on highlighted item type */
+            if (entry->enum_idx == MENU_ENUM_LABEL_HISTORY_TAB)
+            {
+               if (g_defaults.content_history)
+                  count = playlist_size(g_defaults.content_history);
+            }
+            else if (entry->enum_idx == MENU_ENUM_LABEL_FAVORITES_TAB)
+            {
+               if (g_defaults.content_favorites)
+                  count = playlist_size(g_defaults.content_favorites);
+            }
+            else if (!string_is_empty(entry->label)
+                  && path_is_directory(entry->label))
+            {
+               count = streamlined_count_playable_in_folder(entry->label);
+               streamlined_read_folder_core(entry->label,
+                     folder_core, sizeof(folder_core));
+            }
+
             glo = streamlined_view_push(&strm->view_stack,
                   STREAMLINED_VIEW_GAME_LIST_OPTIONS);
             if (glo)
@@ -7784,8 +7883,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         entry->path,
                         sizeof(glo->data.game_list_options.item_label));
                glo->data.game_list_options.entry_idx = entry->entry_idx;
-               glo->data.game_list_options.core_path[0] = '\0';
-               glo->data.game_list_options.source_count = 0;
+               glo->data.game_list_options.source_count = count;
+               if (!string_is_empty(folder_core))
+                  strlcpy(glo->data.game_list_options.core_path,
+                        folder_core,
+                        sizeof(glo->data.game_list_options.core_path));
+               else
+                  glo->data.game_list_options.core_path[0] = '\0';
                streamlined_push_nav_marker();
                streamlined_populate_game_list_options(strm);
             }
@@ -8026,7 +8130,17 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (action == MENU_ACTION_SEARCH && entry)
          {
             streamlined_view_t *glo;
-   
+            size_t count = 0;
+            const char *playlist_path = entry->label;
+
+            /* Load playlist to count entries for Random Game */
+            if (!string_is_empty(playlist_path)
+                  && path_is_valid(playlist_path))
+            {
+               if (streamlined_load_user_playlist(strm, playlist_path))
+                  count = playlist_size(strm->user_playlist);
+            }
+
             glo = streamlined_view_push(&strm->view_stack,
                   STREAMLINED_VIEW_GAME_LIST_OPTIONS);
             if (glo)
@@ -8042,6 +8156,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         entry->path,
                         sizeof(glo->data.game_list_options.item_label));
                glo->data.game_list_options.entry_idx = entry->entry_idx;
+               glo->data.game_list_options.source_count = count;
+               glo->data.game_list_options.core_path[0] = '\0';
                streamlined_populate_game_list_options(strm);
             }
             return 0;

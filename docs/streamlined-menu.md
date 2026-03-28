@@ -91,7 +91,11 @@ When you have a game highlighted — in a folder, History, Favorites, a playlist
 - **Remove Playlist** - Removes the entire playlist you are browsing. You will be asked to confirm before it is removed. This option only appears when you are browsing a playlist (not History or Favorites).
 - **Remove Game** - Permanently deletes the game file and removes it from all playlists, History, and Favorites. You will be asked to confirm before it is removed. This option appears when you have a game highlighted in a folder, History, Favorites, a playlist, or the Game Switcher. Your saves, screenshots, and other files are not touched.
 
-When you are browsing the playlists list (not inside a specific playlist), the Options menu will show:
+When you highlight a folder, **History**, **Favorites**, or a playlist on the main screen (or a specific playlist in the playlists list) without entering it, the Options menu will show:
+
+- **Random Game** - Picks a random game from that folder, History, Favorites, or playlist and opens a preview. You will see the game's name and artwork. Press **A** to play, **X** to resume (if you have saved progress), or **B** to go back. This option only appears when there are at least two games.
+
+When you are browsing the playlists list (not inside a specific playlist), the Options menu will also show:
 
 - **Create a new playlist** - Opens a keyboard so you can type a name for a new playlist. Press Done to create it, or cancel to go back. If a playlist with that name already exists, you will see an error message and can try a different name.
 - **Remove Playlist** - Removes the highlighted playlist. You will be asked to confirm before it is removed.
