@@ -90,10 +90,12 @@ When you have a game highlighted — in a folder, History, Favorites, a playlist
 - **Remove from Playlist** - Removes the game from the playlist you are browsing. You will be asked to confirm before it is removed. This option only appears when you are browsing a playlist.
 - **Remove Playlist** - Removes the entire playlist you are browsing. You will be asked to confirm before it is removed. This option only appears when you are browsing a playlist (not History or Favorites).
 - **Remove Game** - Permanently deletes the game file and removes it from all playlists, History, and Favorites. You will be asked to confirm before it is removed. This option appears when you have a game highlighted in a folder, History, Favorites, a playlist, or the Game Switcher. Your saves, screenshots, and other files are not touched.
+- **Change Core** - Lets you change which emulator core is used. When browsing a folder, you can choose to change the core for the entire folder or just for the selected game. From History, Favorites, a playlist, or the Game Switcher, it changes the core for that specific game. When you change a game's core, the choice is saved for that game and updated in all playlists, History, and Favorites. The title at the top shows the current folder and game core if they are set. If a game already has a game-specific core, a **Reset Game Core** option appears at the top of the list to remove the override.
 
 When you highlight a folder, **History**, **Favorites**, or a playlist on the main screen (or a specific playlist in the playlists list) without entering it, the Options menu will show:
 
 - **Random Game** - Picks a random game from that folder, History, Favorites, or playlist and opens a preview. You will see the game's name and artwork. Press **A** to play, **X** to resume (if you have saved progress), or **B** to go back. This option only appears when there are at least two games.
+- **Change Core** - When highlighting a folder on the main screen, lets you change or set the core for that folder. Pick a core from the list and the menu saves your choice.
 
 When you are browsing the playlists list (not inside a specific playlist), the Options menu will also show:
 
