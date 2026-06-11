@@ -428,6 +428,13 @@ void rarch_stop_draw_observer(void)
 - (void)pressesBegan:(NSSet<UIPress *> *)presses
            withEvent:(UIPressesEvent *)event
 {
+    /* While the native keyboard (UITextField) is up, let UIKit handle every
+     * press. Sending micro-gamepad keys here would feed input_keyboard_event ->
+     * input_keyboard_line_append, which reallocs RetroArch's keyboard buffer and
+     * leaves the cocoa keyboard's cached pointer dangling -> heap corruption. */
+    if (ios_keyboard_active())
+        return [super pressesBegan:presses withEvent:event];
+
     for (UIPress *press in presses)
     {
         bool has_key = false;
@@ -445,6 +452,11 @@ void rarch_stop_draw_observer(void)
 
 -(void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event
 {
+    /* See pressesBegan: avoid feeding RetroArch's keyboard buffer while the
+     * native keyboard is active (prevents the realloc/dangling-pointer crash). */
+    if (ios_keyboard_active())
+        return [super pressesEnded:presses withEvent:event];
+
     for (UIPress *press in presses)
     {
        /* Forward Menu release to UIKit when at top so backgrounding completes */
@@ -801,6 +813,50 @@ void rarch_stop_draw_observer(void)
 #endif
 }
 
+#if TARGET_OS_TV && !TARGET_OS_IOS
+/*
+ * Present the WebDAV "Welcome" alert, but only when it is safe to do so.
+ * On tvOS, presenting (or focus-navigating) a UIAlertController while the
+ * on-screen keyboard / a UITextField is the first responder crashes UIKit's
+ * focus engine. Defer until no keyboard input dialog is active and nothing
+ * else is already presented, retrying shortly otherwise.
+ */
+- (void)presentWebServerWelcomeWhenSafe:(NSString *)servers
+{
+    struct menu_state *menu_st = menu_state_get_ptr();
+
+    if ((menu_st && (menu_st->flags & MENU_ST_FLAG_INP_DLG_KB_DISPLAY))
+          || self.presentedViewController)
+    {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+              dispatch_get_main_queue(), ^{
+            [self presentWebServerWelcomeWhenSafe:servers];
+        });
+        return;
+    }
+
+    {
+        settings_t *settings = config_get_ptr();
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Welcome to RetroArch" message:[NSString stringWithFormat:@"To transfer files from your computer, go to one of these addresses on your web browser:\n\n%@",servers] preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+            style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                struct menu_state *ms = menu_state_get_ptr();
+                ms->flags &= ~MENU_ST_FLAG_BLOCK_ALL_INPUT;
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Don't Show Again"
+            style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                struct menu_state *ms = menu_state_get_ptr();
+                ms->flags &= ~MENU_ST_FLAG_BLOCK_ALL_INPUT;
+                configuration_set_bool(settings, settings->bools.gcdwebserver_alert, false);
+        }]];
+        [self presentViewController:alert animated:YES completion:^{
+            struct menu_state *ms = menu_state_get_ptr();
+            ms->flags |= MENU_ST_FLAG_BLOCK_ALL_INPUT;
+        }];
+    }
+}
+#endif
+
 #pragma mark GCDWebServerDelegate
 - (void)webServerDidCompleteBonjourRegistration:(GCDWebServer*)server
 {
@@ -819,30 +875,7 @@ void rarch_stop_draw_observer(void)
 
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Welcome to RetroArch" message:[NSString stringWithFormat:@"To transfer files from your computer, go to one of these addresses on your web browser:\n\n%@",servers] preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-            style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                struct menu_state *menu_st = menu_state_get_ptr();
-                menu_st->flags &= ~MENU_ST_FLAG_BLOCK_ALL_INPUT;;
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Don't Show Again"
-            style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                struct menu_state *menu_st = menu_state_get_ptr();
-                menu_st->flags &= ~MENU_ST_FLAG_BLOCK_ALL_INPUT;
-                configuration_set_bool(settings, settings->bools.gcdwebserver_alert, false);
-        }]];
-#if TARGET_OS_IOS
-        [alert addAction:[UIAlertAction actionWithTitle:@"Stop Server" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            [[WebServer sharedInstance] webUploader].delegate = nil;
-            [[WebServer sharedInstance] stopServers];
-           struct menu_state *menu_st = menu_state_get_ptr();
-           menu_st->flags &= ~MENU_ST_FLAG_BLOCK_ALL_INPUT;;
-        }]];
-#endif
-        [self presentViewController:alert animated:YES completion:^{
-            struct menu_state *menu_st = menu_state_get_ptr();
-            menu_st->flags |= MENU_ST_FLAG_BLOCK_ALL_INPUT;
-        }];
+        [self presentWebServerWelcomeWhenSafe:servers];
     });
 #endif
 }

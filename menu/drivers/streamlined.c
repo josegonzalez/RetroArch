@@ -51,6 +51,7 @@
 #include <string/stdstring.h>
 #include <lists/file_list.h>
 #include <compat/strl.h>
+#include <compat/strcasestr.h>
 #include <retro_inline.h>
 
 #ifdef HAVE_CONFIG_H
@@ -288,7 +289,8 @@ typedef enum
    STREAMLINED_VIEW_PLAYLIST_PICKER,  /* Pick a playlist to add a game to */
    STREAMLINED_VIEW_CREATE_PLAYLIST,  /* Text input for new playlist name */
    STREAMLINED_VIEW_CHANGE_CORE_MENU,   /* "Change Folder Core" / "Change Game Core" chooser */
-   STREAMLINED_VIEW_CHANGE_CORE_PICKER  /* Core picker for Change Core action */
+   STREAMLINED_VIEW_CHANGE_CORE_PICKER, /* Core picker for Change Core action */
+   STREAMLINED_VIEW_SEARCH              /* Search input dialog + results list */
 } streamlined_view_type_t;
 
 /* Per-view data stored in a tagged union */
@@ -347,6 +349,12 @@ typedef struct
          char folder_path[PATH_MAX_LENGTH];
          streamlined_view_type_t source_type;
       } change_core_picker;
+      struct {
+         streamlined_view_type_t source_type; /* FOLDER, HISTORY, PLAYLIST, GAME_SWITCHER */
+         char folder_path[PATH_MAX_LENGTH];   /* FOLDER source: root directory to search */
+         char core_path[PATH_MAX_LENGTH];     /* FOLDER source: folder default core */
+         char query[256];                     /* Current search text ("" = not entered yet) */
+      } search;
    } data;
 } streamlined_view_t;
 
@@ -541,7 +549,21 @@ static INLINE bool streamlined_is_game_view(streamlined_view_type_t vtype)
    return vtype == STREAMLINED_VIEW_FOLDER
        || vtype == STREAMLINED_VIEW_HISTORY
        || vtype == STREAMLINED_VIEW_FAVORITES
-       || vtype == STREAMLINED_VIEW_PLAYLIST;
+       || vtype == STREAMLINED_VIEW_PLAYLIST
+       || vtype == STREAMLINED_VIEW_SEARCH;
+}
+
+/*
+ * Resolve the "effective" game-list type for a view. SEARCH results behave like
+ * their source view (folder/history/playlist/game-switcher), so view-type-dependent
+ * helpers consult this instead of view->type. All other views return their own type.
+ */
+static INLINE streamlined_view_type_t streamlined_effective_list_type(
+      const streamlined_view_t *v)
+{
+   if (v && v->type == STREAMLINED_VIEW_SEARCH)
+      return v->data.search.source_type;
+   return v ? v->type : STREAMLINED_VIEW_RA_SETTINGS;
 }
 
 /*
@@ -655,6 +677,11 @@ static void streamlined_playlist_config_init(
       playlist_config_t *config, const char *path);
 static void streamlined_glo_create_playlist(streamlined_t *strm);
 static void streamlined_populate_create_playlist(streamlined_t *strm);
+
+/* Search forward declarations */
+static void streamlined_glo_search(streamlined_t *strm);
+static void streamlined_populate_search_input(streamlined_t *strm);
+static void streamlined_populate_search_results(streamlined_t *strm);
 static void streamlined_populate_core_selection(
       streamlined_t *strm, const char *content_path,
       bool show_reset);
@@ -1804,16 +1831,19 @@ static bool streamlined_resolve_playlist_artwork(
    if (!view)
       return false;
 
-   /* Get the playlist for this view */
-   if (view->type == STREAMLINED_VIEW_HISTORY
-         || view->type == STREAMLINED_VIEW_GAME_SWITCHER)
-      playlist = g_defaults.content_history;
-   else if (view->type == STREAMLINED_VIEW_FAVORITES)
-      playlist = g_defaults.content_favorites;
-   else if (view->type == STREAMLINED_VIEW_PLAYLIST)
-      playlist = strm->user_playlist;
-   else
-      return false;
+   /* Get the playlist for this view (SEARCH resolves to its source type) */
+   {
+      streamlined_view_type_t etype = streamlined_effective_list_type(view);
+      if (etype == STREAMLINED_VIEW_HISTORY
+            || etype == STREAMLINED_VIEW_GAME_SWITCHER)
+         playlist = g_defaults.content_history;
+      else if (etype == STREAMLINED_VIEW_FAVORITES)
+         playlist = g_defaults.content_favorites;
+      else if (etype == STREAMLINED_VIEW_PLAYLIST)
+         playlist = strm->user_playlist;
+      else
+         return false;
+   }
 
    if (!playlist || entry_idx >= playlist_size(playlist))
       return false;
@@ -2073,13 +2103,16 @@ static void streamlined_load_artwork_thumbnails(
    if (!view || !streamlined_is_game_view(view->type))
       return;
 
-   /* For playlist-based views, try direct db_name+label lookup first */
+   /* For playlist-based views, try direct db_name+label lookup first
+    * (SEARCH resolves to its source type) */
    {
       bool found = false;
+      streamlined_view_type_t etype = streamlined_effective_list_type(view);
 
-      if (view->type == STREAMLINED_VIEW_HISTORY
-            || view->type == STREAMLINED_VIEW_FAVORITES
-            || view->type == STREAMLINED_VIEW_PLAYLIST)
+      if (etype == STREAMLINED_VIEW_HISTORY
+            || etype == STREAMLINED_VIEW_FAVORITES
+            || etype == STREAMLINED_VIEW_PLAYLIST
+            || etype == STREAMLINED_VIEW_GAME_SWITCHER)
          found = streamlined_resolve_playlist_artwork(strm,
                list->list[selection].entry_idx,
                artwork_path, sizeof(artwork_path));
@@ -3828,6 +3861,334 @@ static void streamlined_glo_create_playlist(streamlined_t *strm)
    menu_input_dialog_start(&line);
 }
 
+/* ======================================================================
+ * SEARCH
+ * ====================================================================== */
+
+/*
+ * Match a display name against a search query. Mirrors RetroArch's own menu
+ * search: case-insensitive substring (strcasestr), split on spaces with every
+ * term required (e.g. "mario world" matches "Super Mario World").
+ */
+static bool streamlined_search_match(const char *name, const char *query)
+{
+   char terms[256];
+   char *saveptr = NULL;
+   char *tok;
+
+   if (string_is_empty(name))
+      return false;
+   if (string_is_empty(query))
+      return true;
+
+   strlcpy(terms, query, sizeof(terms));
+
+   for (tok = strtok_r(terms, " ", &saveptr); tok;
+        tok = strtok_r(NULL, " ", &saveptr))
+   {
+      if (!strcasestr(name, tok))
+         return false;
+   }
+   return true;
+}
+
+static void streamlined_populate_search_input(streamlined_t *strm)
+{
+   file_list_t *list = streamlined_get_and_clear_menu_list();
+   if (!list)
+      return;
+   menu_entries_append(list,
+         "Type a name and press Done",
+         "",
+         MSG_UNKNOWN,
+         FILE_TYPE_NONE,
+         0, 0, NULL);
+}
+
+/*
+ * Recursively scan a folder for games whose display name matches the query.
+ * Multi-disc .m3u folders are treated as a single game (not descended into).
+ * Appended entries use FILE_TYPE_PLAIN with entry_idx 0 (folder cores are
+ * resolved per-result from the content's own directory).
+ */
+static void streamlined_search_scan_folder(
+      streamlined_t *strm, file_list_t *list,
+      const char *dir, const char *query, unsigned depth)
+{
+   settings_t *settings = config_get_ptr();
+   struct string_list *str_list;
+   unsigned i;
+
+   if (depth > 8)   /* guard against pathological nesting / symlink loops */
+      return;
+
+   str_list = dir_list_new(dir, NULL, true,
+         settings->bools.show_hidden_files, true, false);
+   if (!str_list)
+      return;
+
+   dir_list_sort(str_list, true);
+
+   for (i = 0; i < str_list->size; i++)
+   {
+      const char *path = str_list->elems[i].data;
+      unsigned attr    = str_list->elems[i].attr.i;
+      const char *name = path_basename(path);
+
+      if (!name || name[0] == '.')
+         continue;
+
+      if (attr == RARCH_DIRECTORY)
+      {
+         char m3u_path[PATH_MAX_LENGTH];
+
+         /* Multi-disc m3u folder = single game; match it, don't descend */
+         if (streamlined_detect_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+         {
+            char display_name[256];
+            const char *clean = streamlined_strip_sort_prefix(name);
+            strlcpy(display_name, clean, sizeof(display_name));
+
+            if (streamlined_search_match(display_name, query))
+               menu_entries_append(list, display_name, m3u_path,
+                     MSG_UNKNOWN, FILE_TYPE_PLAIN, 0, 0, NULL);
+         }
+         else
+            streamlined_search_scan_folder(strm, list, path, query, depth + 1);
+      }
+      else
+      {
+         char display_name[256];
+         strlcpy(display_name, name, sizeof(display_name));
+         path_remove_extension(display_name);
+
+         if (streamlined_search_match(display_name, query))
+            menu_entries_append(list, display_name, path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN, 0, 0, NULL);
+      }
+   }
+
+   string_list_free(str_list);
+}
+
+/*
+ * Populate the SEARCH results list by filtering the source context by query.
+ * FOLDER source scans recursively; playlist-backed sources iterate the relevant
+ * playlist (HISTORY/GAME_SWITCHER → history, PLAYLIST → user playlist), reusing
+ * the m3u dedup + display-name logic from streamlined_populate_playlist_view and
+ * preserving the playlist index as entry_idx.
+ */
+static void streamlined_populate_search_results(streamlined_t *strm)
+{
+   file_list_t *list = streamlined_get_and_clear_menu_list();
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   const char *query;
+   streamlined_view_type_t source;
+
+   if (!list || !view || view->type != STREAMLINED_VIEW_SEARCH)
+      return;
+
+   query  = view->data.search.query;
+   source = view->data.search.source_type;
+
+   if (source == STREAMLINED_VIEW_FOLDER)
+   {
+      if (!string_is_empty(view->data.search.folder_path))
+         streamlined_search_scan_folder(strm, list,
+               view->data.search.folder_path, query, 0);
+   }
+   else
+   {
+      playlist_t *playlist;
+      size_t pl_size, i;
+      uint32_t seen_hashes[64];
+      size_t seen_count = 0;
+
+      if (source == STREAMLINED_VIEW_HISTORY
+            || source == STREAMLINED_VIEW_GAME_SWITCHER)
+         playlist = g_defaults.content_history;
+      else if (source == STREAMLINED_VIEW_PLAYLIST)
+         playlist = strm->user_playlist;
+      else
+         playlist = NULL;
+
+      if (playlist)
+      {
+         pl_size = playlist_size(playlist);
+         for (i = 0; i < pl_size; i++)
+         {
+            const struct playlist_entry *pl_entry = NULL;
+            char display_name[256];
+            char resolved_path[PATH_MAX_LENGTH];
+            const char *content_path;
+
+            playlist_get_index(playlist, i, &pl_entry);
+            if (!pl_entry || string_is_empty(pl_entry->path))
+               continue;
+
+            strlcpy(resolved_path, pl_entry->path, sizeof(resolved_path));
+            playlist_resolve_path(PLAYLIST_LOAD, false,
+                  resolved_path, sizeof(resolved_path));
+            content_path = resolved_path;
+
+            if (!path_is_valid(content_path))
+               continue;
+
+            /* Dedup disc files inside m3u folders to the game name */
+            {
+               char parent_dir[PATH_MAX_LENGTH];
+               char m3u_path[PATH_MAX_LENGTH];
+               size_t parent_len;
+
+               fill_pathname_basedir(parent_dir, content_path,
+                     sizeof(parent_dir));
+               parent_len = strlen(parent_dir);
+               if (parent_len > 1 && parent_dir[parent_len - 1] == '/')
+                  parent_dir[parent_len - 1] = '\0';
+
+               if (streamlined_detect_m3u_folder(parent_dir,
+                        m3u_path, sizeof(m3u_path)))
+               {
+                  size_t j;
+                  bool already_seen = false;
+                  uint32_t hash = encoding_crc32(0,
+                        (const uint8_t*)m3u_path, strlen(m3u_path));
+
+                  for (j = 0; j < seen_count; j++)
+                     if (seen_hashes[j] == hash)
+                     {
+                        already_seen = true;
+                        break;
+                     }
+                  if (already_seen)
+                     continue;
+                  if (seen_count < 64)
+                     seen_hashes[seen_count++] = hash;
+
+                  {
+                     const char *folder_name = path_basename(parent_dir);
+                     const char *clean = streamlined_strip_sort_prefix(
+                           folder_name ? folder_name : "");
+                     strlcpy(display_name, clean, sizeof(display_name));
+                  }
+
+                  if (streamlined_search_match(display_name, query))
+                     menu_entries_append(list, display_name, m3u_path,
+                           MSG_UNKNOWN, FILE_TYPE_PLAIN, 0, i, NULL);
+                  continue;
+               }
+            }
+
+            if (!string_is_empty(pl_entry->label))
+               strlcpy(display_name, pl_entry->label, sizeof(display_name));
+            else
+            {
+               const char *basename = path_basename(content_path);
+               strlcpy(display_name, basename ? basename : content_path,
+                     sizeof(display_name));
+               path_remove_extension(display_name);
+            }
+
+            if (streamlined_search_match(display_name, query))
+               menu_entries_append(list, display_name, content_path,
+                     MSG_UNKNOWN, FILE_TYPE_PLAIN, 0, i, NULL);
+         }
+      }
+   }
+
+   if (list->size == 0)
+      menu_entries_append(list, "No games found", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE, 0, 0, NULL);
+}
+
+/*
+ * Keyboard callback for the Search GLO action. On cancel/empty input, pop the
+ * SEARCH view back to GLO. Otherwise store the query and show matching games.
+ */
+static void streamlined_search_cb(void *userdata, const char *line)
+{
+   struct menu_state *menu_st;
+   streamlined_t *strm;
+   streamlined_view_t *view;
+
+   menu_input_dialog_end();
+
+   menu_st = menu_state_get_ptr();
+   strm    = (streamlined_t*)menu_st->userdata;
+   if (!strm)
+      return;
+
+   view = streamlined_view_current(&strm->view_stack);
+   if (!view || view->type != STREAMLINED_VIEW_SEARCH)
+      return;
+
+   /* Cancel or empty — pop SEARCH and return to GLO */
+   if (!line || !*line)
+   {
+      streamlined_return_to_glo(strm, menu_st, false);
+      return;
+   }
+
+   strlcpy(view->data.search.query, line, sizeof(view->data.search.query));
+   streamlined_populate_search_results(strm);
+   menu_st->selection_ptr = 0;
+}
+
+/*
+ * GLO action: push the SEARCH view and open the keyboard. Records the source
+ * context so results can be filtered and cores resolved. For FOLDER source,
+ * grabs the root folder path/core from the FOLDER view beneath GLO.
+ */
+static void streamlined_glo_search(streamlined_t *strm)
+{
+   menu_input_ctx_line_t line;
+   streamlined_view_t *glo = streamlined_view_current(&strm->view_stack);
+   streamlined_view_t *search;
+   streamlined_view_type_t source_type;
+
+   if (!glo || glo->type != STREAMLINED_VIEW_GAME_LIST_OPTIONS)
+      return;
+
+   source_type = glo->data.game_list_options.source_type;
+
+   search = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_SEARCH);
+   if (!search)
+      return;
+
+   search->data.search.source_type    = source_type;
+   search->data.search.query[0]       = '\0';
+   search->data.search.folder_path[0] = '\0';
+   search->data.search.core_path[0]   = '\0';
+
+   /* For folder source, find the FOLDER view beneath GLO for the root path/core */
+   if (source_type == STREAMLINED_VIEW_FOLDER)
+   {
+      int si;
+      for (si = strm->view_stack.top - 1; si >= 0; si--)
+      {
+         if (strm->view_stack.entries[si].type == STREAMLINED_VIEW_FOLDER)
+         {
+            strlcpy(search->data.search.folder_path,
+                  strm->view_stack.entries[si].data.folder.folder_path,
+                  sizeof(search->data.search.folder_path));
+            strlcpy(search->data.search.core_path,
+                  strm->view_stack.entries[si].data.folder.core_path,
+                  sizeof(search->data.search.core_path));
+            break;
+         }
+      }
+   }
+
+   streamlined_populate_search_input(strm);
+
+   line.label         = "Search";
+   line.label_setting = NULL;
+   line.type          = 0;
+   line.idx           = 0;
+   line.cb            = streamlined_search_cb;
+   menu_input_dialog_start(&line);
+}
+
 /*
  * Scan a directory and build an array of indices into the returned
  * string_list that point to playable entries (regular files + m3u folders).
@@ -4563,6 +4924,9 @@ static void streamlined_render_menu(streamlined_t *strm,
          break;
       case STREAMLINED_VIEW_CREATE_PLAYLIST:
          strlcpy(title_buf, "New Playlist", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_SEARCH:
+         strlcpy(title_buf, "Search", sizeof(title_buf));
          break;
       case STREAMLINED_VIEW_CONFIRM_REMOVE:
          if (!string_is_empty(view->data.confirm_remove.content_path))
@@ -5696,21 +6060,25 @@ static bool streamlined_get_entry_core_path(
       size_t entry_idx, char *core_out, size_t core_size)
 {
    streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   streamlined_view_type_t etype;
    if (!view)
       return false;
 
-   if (view->type == STREAMLINED_VIEW_HISTORY
-         || view->type == STREAMLINED_VIEW_FAVORITES
-         || view->type == STREAMLINED_VIEW_PLAYLIST
-         || view->type == STREAMLINED_VIEW_GAME_SWITCHER)
+   /* SEARCH results resolve cores like their source view type */
+   etype = streamlined_effective_list_type(view);
+
+   if (etype == STREAMLINED_VIEW_HISTORY
+         || etype == STREAMLINED_VIEW_FAVORITES
+         || etype == STREAMLINED_VIEW_PLAYLIST
+         || etype == STREAMLINED_VIEW_GAME_SWITCHER)
    {
       playlist_t *playlist;
       const struct playlist_entry *pl_entry = NULL;
 
-      if (view->type == STREAMLINED_VIEW_HISTORY
-            || view->type == STREAMLINED_VIEW_GAME_SWITCHER)
+      if (etype == STREAMLINED_VIEW_HISTORY
+            || etype == STREAMLINED_VIEW_GAME_SWITCHER)
          playlist = g_defaults.content_history;
-      else if (view->type == STREAMLINED_VIEW_FAVORITES)
+      else if (etype == STREAMLINED_VIEW_FAVORITES)
          playlist = g_defaults.content_favorites;
       else
          playlist = strm->user_playlist;
@@ -5751,10 +6119,34 @@ static bool streamlined_get_entry_core_path(
       }
    }
 
-   if (view->type == STREAMLINED_VIEW_FOLDER)
+   if (etype == STREAMLINED_VIEW_FOLDER)
+   {
+      /* Recursive search may surface games from subfolders, each of which can
+       * have its own .core.txt — resolve relative to the result's own directory,
+       * falling back to the search root's folder core. */
+      if (view->type == STREAMLINED_VIEW_SEARCH)
+      {
+         char content_dir[DIR_MAX_LENGTH];
+
+         if (streamlined_read_game_core(content_path, core_out, core_size))
+            return true;
+
+         fill_pathname_basedir(content_dir, content_path, sizeof(content_dir));
+         if (streamlined_read_folder_core(content_dir, core_out, core_size))
+            return true;
+
+         if (!string_is_empty(view->data.search.core_path))
+         {
+            strlcpy(core_out, view->data.search.core_path, core_size);
+            return true;
+         }
+         return false;
+      }
+
       return streamlined_resolve_core_for_content(
             content_path, view->data.folder.core_path,
             core_out, core_size);
+   }
 
    return false;
 }
@@ -6506,6 +6898,24 @@ static void streamlined_populate_game_list_options(streamlined_t *strm)
          menu_entries_append(list,
                "Random Game",
                "glo_random_game",
+               MSG_UNKNOWN,
+               FILE_TYPE_NONE,
+               0, 0, NULL);
+      }
+   }
+
+   /* "Search" — available when browsing a folder, game switcher, history, or playlist */
+   if (view)
+   {
+      streamlined_view_type_t src = view->data.game_list_options.source_type;
+      if (src == STREAMLINED_VIEW_FOLDER
+            || src == STREAMLINED_VIEW_GAME_SWITCHER
+            || src == STREAMLINED_VIEW_HISTORY
+            || src == STREAMLINED_VIEW_PLAYLIST)
+      {
+         menu_entries_append(list,
+               "Search",
+               "glo_search",
                MSG_UNKNOWN,
                FILE_TYPE_NONE,
                0, 0, NULL);
@@ -7442,6 +7852,13 @@ static void streamlined_populate_entries(void *data,
          {
             streamlined_populate_create_playlist(strm);
          }
+         else if (view && view->type == STREAMLINED_VIEW_SEARCH)
+         {
+            if (view->data.search.query[0])
+               streamlined_populate_search_results(strm);
+            else
+               streamlined_populate_search_input(strm);
+         }
          else if (view && view->type == STREAMLINED_VIEW_CHANGE_CORE_MENU)
          {
             streamlined_populate_change_core_menu(strm);
@@ -8218,6 +8635,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
             else if (view && view->type == STREAMLINED_VIEW_RANDOM_PREVIEW)
                streamlined_populate_random_preview(strm);
+            else if (view && view->type == STREAMLINED_VIEW_SEARCH)
+               streamlined_populate_search_results(strm);
             if (view)
                menu_st->selection_ptr = view->saved_selection;
             return 0;
@@ -8947,6 +9366,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             else if (string_is_equal(sel_entry.label,
                   "glo_change_core"))
                streamlined_glo_change_core(strm);
+            else if (string_is_equal(sel_entry.label,
+                  "glo_search"))
+               streamlined_glo_search(strm);
 
             return 0;
          }
@@ -9360,6 +9782,87 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (action == MENU_ACTION_CANCEL)
          {
             streamlined_return_to_glo(strm, menu_st, false);
+            return 0;
+         }
+
+         /* Allow navigation (up/down) */
+         if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+               || action == MENU_ACTION_SCROLL_UP
+               || action == MENU_ACTION_SCROLL_DOWN)
+            return generic_menu_entry_action(userdata, entry, i, action);
+
+         return 0;  /* Block all other input */
+      }
+
+      case STREAMLINED_VIEW_SEARCH:
+      {
+         /* A (OK): launch the selected game fresh, without loading any save */
+         if (action == MENU_ACTION_OK && entry)
+         {
+            const char *item_path = entry->label;
+            if (!string_is_empty(item_path) && path_is_valid(item_path)
+                  && !path_is_directory(item_path))
+            {
+               char resolved_core[PATH_MAX_LENGTH];
+               if (streamlined_get_entry_core_path(strm,
+                        item_path, entry->entry_idx,
+                        resolved_core, sizeof(resolved_core))
+                     && path_is_valid(resolved_core))
+               {
+                  strm->loading_skip_auto_load = true;
+                  streamlined_request_loading(strm,
+                        resolved_core, item_path, false);
+                  return 0;
+               }
+
+               /* No core resolved — show core selection */
+               {
+                  streamlined_view_t *v = streamlined_view_push(
+                        &strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
+                  if (v)
+                     strlcpy(v->data.core_select.content_path, item_path,
+                           sizeof(v->data.core_select.content_path));
+                  streamlined_populate_core_selection(strm, item_path, false);
+               }
+            }
+            return 0;
+         }
+
+         /* X (SCAN): resume from the auto-save when one exists */
+         if (action == MENU_ACTION_SCAN && entry)
+         {
+            if (strm->auto_save_cache.has_auto_save)
+            {
+               const char *item_path = entry->label;
+               if (!string_is_empty(item_path) && path_is_valid(item_path)
+                     && !path_is_directory(item_path))
+               {
+                  char resolved_core[PATH_MAX_LENGTH];
+                  if (streamlined_get_entry_core_path(strm,
+                           item_path, entry->entry_idx,
+                           resolved_core, sizeof(resolved_core))
+                        && path_is_valid(resolved_core))
+                  {
+                     streamlined_request_loading(strm,
+                           resolved_core, item_path, true);
+                     return 0;
+                  }
+               }
+            }
+            return 0;
+         }
+
+         /* B (CANCEL): reopen the input dialog to refine the search */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            menu_input_ctx_line_t line;
+            streamlined_populate_search_input(strm);
+            line.label         = "Search";
+            line.label_setting = NULL;
+            line.type          = 0;
+            line.idx           = 0;
+            line.cb            = streamlined_search_cb;
+            menu_input_dialog_start(&line);
             return 0;
          }
 

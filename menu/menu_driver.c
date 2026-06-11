@@ -5400,6 +5400,16 @@ unsigned menu_event(
    if (set_scroll)
       menu_st->scroll.acceleration  = new_scroll_accel;
 
+#ifdef HAVE_COCOATOUCH
+   /* When the native iOS/tvOS keyboard owns input, do NOT run the on-screen
+    * grid handling below: it calls input_keyboard_line_append() which reallocs
+    * RetroArch's keyboard buffer, leaving the cocoa keyboard's cached pointer
+    * dangling -> heap corruption. Just consume the triggers so they don't fall
+    * through to menu navigation; the UITextField handles all text + dismissal. */
+   if (display_kb && ios_keyboard_active())
+      BIT256_CLEAR_ALL_PTR(p_trigger_input);
+   else
+#endif
    if (display_kb)
    {
 #ifdef HAVE_MIST
