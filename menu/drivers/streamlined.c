@@ -897,7 +897,6 @@ static void streamlined_draw_rounded_pill(streamlined_t *strm,
    draw.coords          = &coords;
    draw.matrix_data     = NULL;
    draw.texture         = strm->white_texture;
-   draw.prim_type       = GFX_DISPLAY_PRIM_TRIANGLESTRIP;
    draw.pipeline_id     = 0;
    draw.scale_factor    = 1.0f;
    draw.rotation        = 0.0f;
@@ -6906,7 +6905,7 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    /* Get actual video dimensions (following Ozone/MaterialUI pattern).
     * p_disp->framebuf_width/height may be 0 at this point since
     * streamlined doesn't use a software framebuffer. */
-   video_driver_get_size(&video_width, &video_height);
+   video_driver_get_output_size(&video_width, &video_height);
 
    /* gfx_display_get_dpi_scale() returns a DPI-aware scale factor
     * that already incorporates settings->floats.menu_scale_factor.
