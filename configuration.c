@@ -1637,6 +1637,9 @@ static struct config_array_setting *populate_settings_array(
    SETTING_ARRAY("secret_access_key",            settings->arrays.secret_access_key, false, NULL, true);
 #endif
 #endif
+   SETTING_ARRAY("romm_url",                     settings->arrays.romm_url, false, NULL, true);
+   SETTING_ARRAY("romm_api_token",               settings->arrays.romm_api_token, false, NULL, true);
+   SETTING_ARRAY("romm_device_id",               settings->arrays.romm_device_id, false, NULL, true);
    SETTING_ARRAY("youtube_stream_key",           settings->arrays.youtube_stream_key, true, NULL, true);
    SETTING_ARRAY("twitch_stream_key",            settings->arrays.twitch_stream_key, true, NULL, true);
    SETTING_ARRAY("facebook_stream_key",          settings->arrays.facebook_stream_key, true, NULL, true);
@@ -1730,6 +1733,7 @@ static struct config_path_setting *populate_settings_path(
 #endif
    /* Browser and config directories are not RGUI dependent, but name is kept to avoid config file change */
    SETTING_PATH("rgui_browser_directory",        settings->paths.directory_menu_content, true, NULL, true);
+   SETTING_PATH("romm_cache_directory",          settings->paths.romm_cache_dir, true, NULL, true);
    SETTING_PATH("rgui_config_directory",         settings->paths.directory_menu_config, true, NULL, true);
 #ifdef HAVE_XMB
    SETTING_PATH("xmb_font",                      settings->paths.path_menu_xmb_font, false, NULL, true);
@@ -1887,6 +1891,7 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("cloud_sync_sync_thumbs",        &settings->bools.cloud_sync_sync_thumbs, true, false, false);
    SETTING_BOOL("cloud_sync_sync_system",        &settings->bools.cloud_sync_sync_system, true, false, false);
    SETTING_BOOL("cloud_sync_sync_roms",          &settings->bools.cloud_sync_sync_roms, true, false, false);
+   SETTING_BOOL("romm_enable",                   &settings->bools.romm_enable, true, false, false);
    SETTING_BOOL("discord_allow",                 &settings->bools.discord_enable, true, false, false);
 #ifdef HAVE_MIST
    SETTING_BOOL("steam_rich_presence_enable",    &settings->bools.steam_rich_presence_enable, true, false, false);
@@ -2696,6 +2701,9 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("cloud_sync_sync_mode",          &settings->uints.cloud_sync_sync_mode, true, CLOUD_SYNC_MODE_AUTOMATIC, false);
    SETTING_UINT("cloud_sync_roms_sync_mode",     &settings->uints.cloud_sync_roms_sync_mode, true, CLOUD_SYNC_ROMS_MODE_AUTOMATIC, false);
 #endif
+   SETTING_UINT("romm_cache_mode",               &settings->uints.romm_cache_mode, true, 0, false);
+   SETTING_UINT("romm_cache_max_size_mb",        &settings->uints.romm_cache_max_size_mb, true, 4096, false);
+   SETTING_UINT("romm_page_size",                &settings->uints.romm_page_size, true, 1000, false);
 
 #ifdef HAVE_LANGEXTRA
    SETTING_UINT("user_language",                 msg_hash_get_uint(MSG_HASH_USER_LANGUAGE), true, frontend_driver_get_user_language(), false);

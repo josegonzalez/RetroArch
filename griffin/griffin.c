@@ -1292,6 +1292,8 @@ NETPLAY
 #include "../libretro-common/net/net_ifinfo.c"
 #endif
 #include "../tasks/task_http.c"
+#include "../network/romm/romm_api.c"
+#include "../network/romm/romm_cache.c"
 #include "../tasks/task_netplay_lan_scan.c"
 #include "../tasks/task_netplay_nat_traversal.c"
 #ifdef HAVE_BLUETOOTH

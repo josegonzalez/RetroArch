@@ -2367,6 +2367,8 @@ ifeq ($(HAVE_NETWORKING), 1)
           $(LIBRETRO_COMM_DIR)/net/net_socket.o \
           core_updater_list.o \
           network/natt.o \
+          network/romm/romm_api.o \
+          network/romm/romm_cache.o \
           tasks/task_netplay_lan_scan.o \
           tasks/task_netplay_nat_traversal.o \
 	  tasks/task_pl_thumbnail_download.o \

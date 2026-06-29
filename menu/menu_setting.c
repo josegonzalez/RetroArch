@@ -123,6 +123,7 @@
 
 #ifdef HAVE_NETWORKING
 #include "../network/netplay/netplay.h"
+#include "../network/romm/romm_api.h"
 #ifdef HAVE_WIFI
 #include "../network/wifi_driver.h"
 #endif
@@ -5603,6 +5604,82 @@ static size_t setting_get_string_representation_uint_cloud_sync_roms_sync_mode(
    }
    return 0;
 }
+#endif
+
+#ifdef HAVE_NETWORKING
+static size_t setting_get_string_representation_uint_romm_cache_mode(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case ROMM_CACHE_KEEP:
+            return strlcpy(s,
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE_KEEP), len);
+         case ROMM_CACHE_LRU:
+            return strlcpy(s,
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE_LRU), len);
+         case ROMM_CACHE_STREAM:
+            return strlcpy(s,
+                  msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE_STREAM), len);
+      }
+   }
+   return 0;
+}
+
+static void romm_settings_msg(const char *msg)
+{
+   runloop_msg_queue_push(msg, strlen(msg), 1, 180, true, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+}
+
+static void romm_test_connection_cb(retro_task_t *task, void *task_data,
+      void *user_data, const char *err)
+{
+   http_transfer_data_t *data = (http_transfer_data_t*)task_data;
+   char msg[160];
+   if (err || !data || data->status < 200 || data->status >= 300 || !data->data)
+      snprintf(msg, sizeof(msg), "RomM: connection failed (HTTP %d)",
+            data ? data->status : 0);
+   else
+   {
+      romm_platform_t *plats = NULL;
+      size_t n = romm_parse_platforms(data->data, data->len, &plats);
+      snprintf(msg, sizeof(msg), "RomM: connected, %u platform(s)", (unsigned)n);
+      if (plats)
+         free(plats);
+   }
+   romm_settings_msg(msg);
+}
+
+static int setting_action_ok_romm_test_connection(
+      rarch_setting_t *setting, size_t idx, bool wraparound)
+{
+   char url[NAME_MAX_LENGTH + 32];
+   char hdr[NAME_MAX_LENGTH + 64];
+   if (!romm_is_configured())
+   {
+      romm_settings_msg("RomM: set server URL and token first");
+      return 0;
+   }
+   romm_url_platforms(url, sizeof(url));
+   romm_build_auth_headers(hdr, sizeof(hdr));
+   task_push_http_transfer_with_headers(url, true, NULL, hdr,
+         romm_test_connection_cb, NULL);
+   romm_settings_msg("RomM: testing connection...");
+   return 0;
+}
+
+static size_t setting_get_string_representation_romm_token(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   settings_t *settings = config_get_ptr();
+   if (settings && settings->arrays.romm_api_token[0] != '\0')
+      return strlcpy(s, "********", len);
+   return 0;
+}
+
 #endif
 
 #if defined(HAVE_OVERLAY)
@@ -12593,6 +12670,130 @@ static bool setting_append_list(
          SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
          (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
          (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+#endif
+#ifdef HAVE_NETWORKING
+         END_SUB_GROUP(list, list_info, parent_group);
+         START_SUB_GROUP(list, list_info, "RomM",
+               &group_info, &subgroup_info, parent_group);
+
+         CONFIG_BOOL(
+               list, list_info,
+               &settings->bools.romm_enable,
+               MENU_ENUM_LABEL_ROMM_ENABLE,
+               MENU_ENUM_LABEL_VALUE_ROMM_ENABLE,
+               false,
+               MENU_ENUM_LABEL_VALUE_OFF,
+               MENU_ENUM_LABEL_VALUE_ON,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler,
+               SD_FLAG_NONE);
+
+         CONFIG_STRING(
+               list, list_info,
+               settings->arrays.romm_url,
+               sizeof(settings->arrays.romm_url),
+               MENU_ENUM_LABEL_ROMM_URL,
+               MENU_ENUM_LABEL_VALUE_ROMM_URL,
+               "",
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
+         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_STRING_LINE_EDIT;
+         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+
+         CONFIG_STRING(
+               list, list_info,
+               settings->arrays.romm_api_token,
+               sizeof(settings->arrays.romm_api_token),
+               MENU_ENUM_LABEL_ROMM_API_TOKEN,
+               MENU_ENUM_LABEL_VALUE_ROMM_API_TOKEN,
+               "",
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].get_string_representation =
+            &setting_get_string_representation_romm_token;
+         SETTINGS_DATA_LIST_CURRENT_ADD_FLAGS(list, list_info, SD_FLAG_ALLOW_INPUT);
+         (*list)[list_info->index - 1].ui_type       = ST_UI_TYPE_PASSWORD_LINE_EDIT;
+         (*list)[list_info->index - 1].action_start  = setting_generic_action_start_default;
+
+         CONFIG_ACTION(
+               list, list_info,
+               MENU_ENUM_LABEL_ROMM_TEST_CONNECTION,
+               MENU_ENUM_LABEL_VALUE_ROMM_TEST_CONNECTION,
+               &group_info,
+               &subgroup_info,
+               parent_group);
+         (*list)[list_info->index - 1].action_ok =
+            &setting_action_ok_romm_test_connection;
+
+         CONFIG_DIR(
+               list, list_info,
+               settings->paths.romm_cache_dir,
+               sizeof(settings->paths.romm_cache_dir),
+               MENU_ENUM_LABEL_ROMM_CACHE_DIRECTORY,
+               MENU_ENUM_LABEL_VALUE_ROMM_CACHE_DIRECTORY,
+               "",
+               MENU_ENUM_LABEL_VALUE_DIRECTORY_DEFAULT,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].action_start = directory_action_start_generic;
+
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.romm_cache_mode,
+               MENU_ENUM_LABEL_ROMM_CACHE_MODE,
+               MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE,
+               ROMM_CACHE_KEEP,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         (*list)[list_info->index - 1].get_string_representation =
+            &setting_get_string_representation_uint_romm_cache_mode;
+         menu_settings_list_current_add_range(list, list_info, 0, ROMM_CACHE_STREAM, 1, true, true);
+
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.romm_cache_max_size_mb,
+               MENU_ENUM_LABEL_ROMM_CACHE_MAX_SIZE,
+               MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MAX_SIZE,
+               4096,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         menu_settings_list_current_add_range(list, list_info, 0, 1024 * 1024, 256, true, true);
+
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.romm_page_size,
+               MENU_ENUM_LABEL_ROMM_PAGE_SIZE,
+               MENU_ENUM_LABEL_VALUE_ROMM_PAGE_SIZE,
+               1000,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         menu_settings_list_current_add_range(list, list_info, 50, 10000, 50, true, true);
 #endif
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);

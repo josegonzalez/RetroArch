@@ -11311,6 +11311,16 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_CLOUD_SYNC_ACCESS_KEY_ID,      PARSE_ONLY_STRING,         false},
                {MENU_ENUM_LABEL_CLOUD_SYNC_SECRET_ACCESS_KEY,  PARSE_ONLY_STRING,         false},
 #endif
+#ifdef HAVE_NETWORKING
+               {MENU_ENUM_LABEL_ROMM_ENABLE,                   PARSE_ONLY_BOOL,           true},
+               {MENU_ENUM_LABEL_ROMM_URL,                      PARSE_ONLY_STRING,         true},
+               {MENU_ENUM_LABEL_ROMM_API_TOKEN,                PARSE_ONLY_STRING,         true},
+               {MENU_ENUM_LABEL_ROMM_TEST_CONNECTION,          PARSE_ACTION,              true},
+               {MENU_ENUM_LABEL_ROMM_CACHE_DIRECTORY,          PARSE_ONLY_DIR,            true},
+               {MENU_ENUM_LABEL_ROMM_CACHE_MODE,               PARSE_ONLY_UINT,           true},
+               {MENU_ENUM_LABEL_ROMM_CACHE_MAX_SIZE,           PARSE_ONLY_UINT,           true},
+               {MENU_ENUM_LABEL_ROMM_PAGE_SIZE,                PARSE_ONLY_UINT,           true},
+#endif
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)

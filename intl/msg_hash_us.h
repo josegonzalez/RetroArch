@@ -1083,6 +1083,82 @@ MSG_HASH(
    "Change cloud sync settings."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_ENABLE,
+   "RomM Integration"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_ENABLE,
+   "Browse and play games from a remote RomM server, and sync saves with it."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_URL,
+   "RomM Server URL"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_URL,
+   "The base URL of your RomM server (e.g. https://romm.example.com)."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_API_TOKEN,
+   "RomM API Token"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_API_TOKEN,
+   "A client API token (rmm_...) for the RomM server. Required scopes: platforms.read, collections.read, roms.read, assets.read, assets.write, devices.read, devices.write."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_TEST_CONNECTION,
+   "Test Connection"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_TEST_CONNECTION,
+   "Check that the server URL and token work by fetching the platform list."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_CACHE_DIRECTORY,
+   "RomM Cache Directory"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_CACHE_DIRECTORY,
+   "Where downloaded games are stored for playing."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE,
+   "Cache Mode"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_CACHE_MODE,
+   "Keep downloads, evict least-recently-used over a size limit, or stream (delete after play)."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE_KEEP,
+   "Keep"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE_LRU,
+   "Limit Size (LRU)"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MODE_STREAM,
+   "Stream"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_CACHE_MAX_SIZE,
+   "Cache Size Limit (MB)"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_CACHE_MAX_SIZE,
+   "Maximum cache size in megabytes when using the Limit Size (LRU) mode."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_PAGE_SIZE,
+   "Game List Page Size"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_PAGE_SIZE,
+   "How many games to fetch per request when browsing a large platform."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ENABLE,
    "Enable Cloud Sync"
    )

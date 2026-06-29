@@ -260,6 +260,9 @@ typedef struct settings
       unsigned keymapper_port;
       unsigned cloud_sync_sync_mode;
       unsigned cloud_sync_roms_sync_mode;
+      unsigned romm_cache_mode;
+      unsigned romm_cache_max_size_mb;
+      unsigned romm_page_size;
       unsigned video_window_opacity;
       unsigned crt_switch_resolution;
       unsigned crt_switch_resolution_super;
@@ -569,6 +572,9 @@ typedef struct settings
       char secret_access_key[186]; /* TODO/RESEARCH - check size, ex https://github.com/winscp/winscp/pull/15/files */
 #endif
 #endif
+      char romm_url[NAME_MAX_LENGTH];
+      char romm_api_token[NAME_MAX_LENGTH];
+      char romm_device_id[NAME_MAX_LENGTH];
 #endif
 
       char crt_switch_timings[NAME_MAX_LENGTH];
@@ -635,6 +641,7 @@ typedef struct settings
       char directory_thumbnails[DIR_MAX_LENGTH];
       char directory_menu_config[DIR_MAX_LENGTH];
       char directory_menu_content[DIR_MAX_LENGTH];
+      char romm_cache_dir[DIR_MAX_LENGTH];
 #ifdef _3DS
       char directory_bottom_assets[DIR_MAX_LENGTH];
 #endif
@@ -1064,6 +1071,9 @@ typedef struct settings
       bool cloud_sync_sync_thumbs;
       bool cloud_sync_sync_system;
       bool cloud_sync_sync_roms;
+
+      /* RomM */
+      bool romm_enable;
 
       /* Misc. */
       bool discord_enable;
