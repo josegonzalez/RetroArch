@@ -1892,6 +1892,7 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("cloud_sync_sync_system",        &settings->bools.cloud_sync_sync_system, true, false, false);
    SETTING_BOOL("cloud_sync_sync_roms",          &settings->bools.cloud_sync_sync_roms, true, false, false);
    SETTING_BOOL("romm_enable",                   &settings->bools.romm_enable, true, false, false);
+   SETTING_BOOL("romm_response_cache_enable",    &settings->bools.romm_response_cache_enable, true, true, false);
    SETTING_BOOL("discord_allow",                 &settings->bools.discord_enable, true, false, false);
 #ifdef HAVE_MIST
    SETTING_BOOL("steam_rich_presence_enable",    &settings->bools.steam_rich_presence_enable, true, false, false);
@@ -2704,6 +2705,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("romm_cache_mode",               &settings->uints.romm_cache_mode, true, 0, false);
    SETTING_UINT("romm_cache_max_size_mb",        &settings->uints.romm_cache_max_size_mb, true, 4096, false);
    SETTING_UINT("romm_page_size",                &settings->uints.romm_page_size, true, 1000, false);
+   SETTING_UINT("romm_response_cache_minutes",   &settings->uints.romm_response_cache_minutes, true, 360, false);
 
 #ifdef HAVE_LANGEXTRA
    SETTING_UINT("user_language",                 msg_hash_get_uint(MSG_HASH_USER_LANGUAGE), true, frontend_driver_get_user_language(), false);

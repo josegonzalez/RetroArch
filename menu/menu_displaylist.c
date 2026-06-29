@@ -132,6 +132,10 @@
 #if defined(HAVE_NETWORKING) && defined(HAVE_WIFI)
 #include "../network/wifi_driver.h"
 #endif
+#ifdef HAVE_NETWORKING
+#include "../network/romm/romm_api.h"
+#include "../network/romm/romm_browse.h"
+#endif
 #include "../tasks/task_content.h"
 #include "../tasks/tasks_internal.h"
 #include "../dynamic.h"
@@ -7133,6 +7137,127 @@ static unsigned menu_displaylist_netplay_refresh_rooms(file_list_t *list)
 
    return count;
 }
+
+/* Append a single non-selectable informational row (Loading.../error/empty). */
+static unsigned menu_displaylist_romm_notice(file_list_t *list, const char *msg)
+{
+   if (menu_entries_append(list, msg,
+            MENU_ENUM_LABEL_NO_ITEMS_STR,
+            MENU_ENUM_LABEL_NO_ITEMS,
+            FILE_TYPE_NONE, 0, 0, NULL))
+      return 1;
+   return 0;
+}
+
+/* RomM browser chooser: Platforms / Collections. */
+static unsigned menu_displaylist_parse_romm_browser(file_list_t *list)
+{
+   unsigned count = 0;
+   if (menu_entries_append(list,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ROMM_PLATFORMS),
+            MENU_ENUM_LABEL_ROMM_PLATFORMS_STR,
+            MENU_ENUM_LABEL_ROMM_PLATFORMS,
+            MENU_SETTING_ACTION, 0, 0, NULL))
+      count++;
+   if (menu_entries_append(list,
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ROMM_COLLECTIONS),
+            MENU_ENUM_LABEL_ROMM_COLLECTIONS_STR,
+            MENU_ENUM_LABEL_ROMM_COLLECTIONS,
+            MENU_SETTING_ACTION, 0, 0, NULL))
+      count++;
+   return count;
+}
+
+static unsigned menu_displaylist_parse_romm_platforms(file_list_t *list)
+{
+   size_t i;
+   unsigned count   = 0;
+   romm_state_t *st = romm_state_get_ptr();
+
+   if (st->platform_status == ROMM_LOAD_LOADING)
+      return menu_displaylist_romm_notice(list, "Loading...");
+   if (st->platform_status == ROMM_LOAD_ERROR)
+      return menu_displaylist_romm_notice(list,
+            "Could not reach the RomM server.");
+   if (st->platform_count == 0)
+      return menu_displaylist_romm_notice(list, "No platforms found.");
+
+   for (i = 0; i < st->platform_count; i++)
+   {
+      char text[300];
+      const romm_platform_t *p = &st->platforms[i];
+      if (p->rom_count > 0)
+         snprintf(text, sizeof(text), "%s (%d)", p->name, p->rom_count);
+      else
+         strlcpy(text, p->name, sizeof(text));
+      if (menu_entries_append(list, text,
+               MENU_ENUM_LABEL_ROMM_PLATFORM_ENTRY_STR,
+               MENU_ENUM_LABEL_ROMM_PLATFORM_ENTRY,
+               (unsigned)(MENU_SETTINGS_ROMM_PLATFORMS_START + i),
+               0, 0, NULL))
+         count++;
+   }
+   return count;
+}
+
+static unsigned menu_displaylist_parse_romm_collections(file_list_t *list)
+{
+   size_t i;
+   unsigned count   = 0;
+   romm_state_t *st = romm_state_get_ptr();
+
+   if (st->collection_status == ROMM_LOAD_LOADING)
+      return menu_displaylist_romm_notice(list, "Loading...");
+   if (st->collection_status == ROMM_LOAD_ERROR)
+      return menu_displaylist_romm_notice(list,
+            "Could not reach the RomM server.");
+   if (st->collection_count == 0)
+      return menu_displaylist_romm_notice(list, "No collections found.");
+
+   for (i = 0; i < st->collection_count; i++)
+   {
+      char text[300];
+      const romm_collection_t *c = &st->collections[i];
+      if (c->rom_count > 0)
+         snprintf(text, sizeof(text), "%s (%d)", c->name, c->rom_count);
+      else
+         strlcpy(text, c->name, sizeof(text));
+      if (menu_entries_append(list, text,
+               MENU_ENUM_LABEL_ROMM_COLLECTION_ENTRY_STR,
+               MENU_ENUM_LABEL_ROMM_COLLECTION_ENTRY,
+               (unsigned)(MENU_SETTINGS_ROMM_COLLECTIONS_START + i),
+               0, 0, NULL))
+         count++;
+   }
+   return count;
+}
+
+static unsigned menu_displaylist_parse_romm_games(file_list_t *list)
+{
+   size_t i;
+   unsigned count   = 0;
+   romm_state_t *st = romm_state_get_ptr();
+
+   if (st->rom_status == ROMM_LOAD_LOADING)
+      return menu_displaylist_romm_notice(list, "Loading...");
+   if (st->rom_status == ROMM_LOAD_ERROR)
+      return menu_displaylist_romm_notice(list,
+            "Could not reach the RomM server.");
+   if (st->rom_count == 0)
+      return menu_displaylist_romm_notice(list, "No games found.");
+
+   for (i = 0; i < st->rom_count; i++)
+   {
+      const romm_rom_t *r = &st->roms[i];
+      if (menu_entries_append(list, r->name,
+               MENU_ENUM_LABEL_ROMM_GAME_ENTRY_STR,
+               MENU_ENUM_LABEL_ROMM_GAME_ENTRY,
+               (unsigned)(MENU_SETTINGS_ROMM_GAMES_START + i),
+               0, 0, NULL))
+         count++;
+   }
+   return count;
+}
 #endif
 
 unsigned menu_displaylist_build_list(
@@ -7680,6 +7805,20 @@ unsigned menu_displaylist_build_list(
          count = menu_displaylist_netplay_refresh_rooms(list);
 #endif
          break;
+#ifdef HAVE_NETWORKING
+      case DISPLAYLIST_ROMM_BROWSER:
+         count = menu_displaylist_parse_romm_browser(list);
+         break;
+      case DISPLAYLIST_ROMM_PLATFORMS:
+         count = menu_displaylist_parse_romm_platforms(list);
+         break;
+      case DISPLAYLIST_ROMM_COLLECTIONS:
+         count = menu_displaylist_parse_romm_collections(list);
+         break;
+      case DISPLAYLIST_ROMM_GAMES:
+         count = menu_displaylist_parse_romm_games(list);
+         break;
+#endif
       case DISPLAYLIST_CONTENT_SETTINGS:
          count = menu_displaylist_parse_load_content_settings(list,
                settings, false);
@@ -11320,6 +11459,8 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_ROMM_CACHE_MODE,               PARSE_ONLY_UINT,           true},
                {MENU_ENUM_LABEL_ROMM_CACHE_MAX_SIZE,           PARSE_ONLY_UINT,           true},
                {MENU_ENUM_LABEL_ROMM_PAGE_SIZE,                PARSE_ONLY_UINT,           true},
+               {MENU_ENUM_LABEL_ROMM_RESPONSE_CACHE_ENABLE,    PARSE_ONLY_BOOL,           true},
+               {MENU_ENUM_LABEL_ROMM_RESPONSE_CACHE_MINUTES,   PARSE_ONLY_UINT,           true},
 #endif
             };
 
@@ -15105,6 +15246,12 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
          case DISPLAYLIST_BROWSE_URL_START:
          case DISPLAYLIST_CONTENT_SETTINGS:
          case DISPLAYLIST_NETPLAY_ROOM_LIST:
+#ifdef HAVE_NETWORKING
+         case DISPLAYLIST_ROMM_BROWSER:
+         case DISPLAYLIST_ROMM_PLATFORMS:
+         case DISPLAYLIST_ROMM_COLLECTIONS:
+         case DISPLAYLIST_ROMM_GAMES:
+#endif
          case DISPLAYLIST_SHADER_PRESET_MANAGER:
          case DISPLAYLIST_INPUT_RETROPAD_BINDS_LIST:
          case DISPLAYLIST_INPUT_HOTKEY_BINDS_LIST:
@@ -15658,6 +15805,14 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(info->list,
                            MENU_ENUM_LABEL_NETPLAY,
                            PARSE_ACTION, false) == 0)
+                     count++;
+
+               if (settings->bools.romm_enable)
+                  if (menu_entries_append(info->list,
+                           msg_hash_to_str(MENU_ENUM_LABEL_VALUE_ROMM),
+                           MENU_ENUM_LABEL_ROMM_STR,
+                           MENU_ENUM_LABEL_ROMM,
+                           MENU_SETTING_ACTION, 0, 0, NULL))
                      count++;
 
 #ifdef HAVE_ONLINE_UPDATER

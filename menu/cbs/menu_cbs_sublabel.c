@@ -528,6 +528,17 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_materialui_dual_thumbnail_list_view_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_materialui_thumbnail_background_enable, MENU_ENUM_SUBLABEL_MATERIALUI_THUMBNAIL_BACKGROUND_ENABLE)
 #endif
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_add_content_list,              MENU_ENUM_SUBLABEL_ADD_CONTENT_LIST)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm,                          MENU_ENUM_SUBLABEL_ROMM)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_enable,                    MENU_ENUM_SUBLABEL_ROMM_ENABLE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_url,                       MENU_ENUM_SUBLABEL_ROMM_URL)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_api_token,                 MENU_ENUM_SUBLABEL_ROMM_API_TOKEN)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_test_connection,          MENU_ENUM_SUBLABEL_ROMM_TEST_CONNECTION)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_cache_directory,          MENU_ENUM_SUBLABEL_ROMM_CACHE_DIRECTORY)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_cache_mode,                MENU_ENUM_SUBLABEL_ROMM_CACHE_MODE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_cache_max_size,            MENU_ENUM_SUBLABEL_ROMM_CACHE_MAX_SIZE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_page_size,                 MENU_ENUM_SUBLABEL_ROMM_PAGE_SIZE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_response_cache_enable,     MENU_ENUM_SUBLABEL_ROMM_RESPONSE_CACHE_ENABLE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_romm_response_cache_minutes,    MENU_ENUM_SUBLABEL_ROMM_RESPONSE_CACHE_MINUTES)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_frame_delay,             MENU_ENUM_SUBLABEL_VIDEO_FRAME_DELAY)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_frame_delay_auto,        MENU_ENUM_SUBLABEL_VIDEO_FRAME_DELAY_AUTO)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_video_frame_time_sample_gated, MENU_ENUM_SUBLABEL_VIDEO_FRAME_TIME_SAMPLE_GATED)
@@ -5088,6 +5099,39 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_ADD_CONTENT_LIST:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_add_content_list);
+            break;
+         case MENU_ENUM_LABEL_ROMM:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm);
+            break;
+         case MENU_ENUM_LABEL_ROMM_ENABLE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_enable);
+            break;
+         case MENU_ENUM_LABEL_ROMM_URL:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_url);
+            break;
+         case MENU_ENUM_LABEL_ROMM_API_TOKEN:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_api_token);
+            break;
+         case MENU_ENUM_LABEL_ROMM_TEST_CONNECTION:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_test_connection);
+            break;
+         case MENU_ENUM_LABEL_ROMM_CACHE_DIRECTORY:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_cache_directory);
+            break;
+         case MENU_ENUM_LABEL_ROMM_CACHE_MODE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_cache_mode);
+            break;
+         case MENU_ENUM_LABEL_ROMM_CACHE_MAX_SIZE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_cache_max_size);
+            break;
+         case MENU_ENUM_LABEL_ROMM_PAGE_SIZE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_page_size);
+            break;
+         case MENU_ENUM_LABEL_ROMM_RESPONSE_CACHE_ENABLE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_response_cache_enable);
+            break;
+         case MENU_ENUM_LABEL_ROMM_RESPONSE_CACHE_MINUTES:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_romm_response_cache_minutes);
             break;
          case MENU_ENUM_LABEL_INPUT_RETROPAD_BINDS:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_input_retropad_settings);

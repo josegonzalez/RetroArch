@@ -55,6 +55,18 @@ void romm_cache_remove(const char *content_path);
  * incoming_bytes fits under the configured cap. No-op in other modes. */
 void romm_cache_evict_if_needed(int64_t incoming_bytes);
 
+/* Disk cache of raw API JSON responses, keyed by an arbitrary string (the key
+ * is sanitized into a filename under <cache>/responses). Gated by the
+ * romm_response_cache_* settings and a wall-clock TTL embedded in each file. */
+
+/* Returns a malloc'd copy of the cached body (NUL-terminated, *out_len set) if
+ * caching is enabled and a non-expired cache file exists; NULL otherwise.
+ * Caller frees the result. */
+char *romm_cache_response_load(const char *key, size_t *out_len);
+
+/* Write a response body to the cache (no-op when caching is disabled). */
+void  romm_cache_response_store(const char *key, const char *data, size_t len);
+
 RETRO_END_DECLS
 
 #endif

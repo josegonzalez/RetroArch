@@ -263,6 +263,7 @@ typedef struct settings
       unsigned romm_cache_mode;
       unsigned romm_cache_max_size_mb;
       unsigned romm_page_size;
+      unsigned romm_response_cache_minutes;
       unsigned video_window_opacity;
       unsigned crt_switch_resolution;
       unsigned crt_switch_resolution_super;
@@ -1074,6 +1075,7 @@ typedef struct settings
 
       /* RomM */
       bool romm_enable;
+      bool romm_response_cache_enable;
 
       /* Misc. */
       bool discord_enable;

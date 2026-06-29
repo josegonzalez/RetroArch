@@ -281,3 +281,121 @@ void romm_cache_evict_if_needed(int64_t incoming_bytes)
 
    free(ents);
 }
+
+/* ============================================================
+ * RESPONSE CACHE (raw API JSON, with an embedded wall-clock TTL)
+ * ============================================================ */
+
+static void romm_response_cache_dir(char *s, size_t len)
+{
+   char base[DIR_MAX_LENGTH];
+   if (!s || len == 0)
+      return;
+   if (!romm_cache_dir(base, sizeof(base)))
+   {
+      s[0] = '\0';
+      return;
+   }
+   fill_pathname_join_special(s, base, "responses", len);
+   if (!path_is_directory(s))
+      path_mkdir(s);
+}
+
+static void romm_response_cache_path(char *s, size_t len, const char *key)
+{
+   char   dir[DIR_MAX_LENGTH];
+   char   safe[192];
+   size_t i;
+   if (!s || len == 0)
+      return;
+   romm_response_cache_dir(dir, sizeof(dir));
+   if (string_is_empty(dir) || string_is_empty(key))
+   {
+      s[0] = '\0';
+      return;
+   }
+   for (i = 0; key[i] && i < sizeof(safe) - 6; i++)
+   {
+      char c = key[i];
+      safe[i] = (   (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                 || (c >= '0' && c <= '9') || c == '-' || c == '.')
+            ? c : '_';
+   }
+   safe[i] = '\0';
+   strlcat(safe, ".json", sizeof(safe));
+   fill_pathname_join_special(s, dir, safe, len);
+}
+
+char *romm_cache_response_load(const char *key, size_t *out_len)
+{
+   settings_t *settings = config_get_ptr();
+   char        path[PATH_MAX_LENGTH];
+   void       *buf       = NULL;
+   int64_t     sz        = 0;
+   char       *body, *nl;
+   unsigned    minutes;
+   size_t      bodylen;
+
+   if (out_len)
+      *out_len = 0;
+   if (!settings || !settings->bools.romm_response_cache_enable)
+      return NULL;
+   if ((minutes = settings->uints.romm_response_cache_minutes) == 0)
+      return NULL;
+   romm_response_cache_path(path, sizeof(path), key);
+   if (string_is_empty(path) || !path_is_valid(path))
+      return NULL;
+   if (!filestream_read_file(path, &buf, &sz) || !buf || sz <= 0)
+   {
+      if (buf)
+         free(buf);
+      return NULL;
+   }
+   /* First line is the unix-seconds timestamp the file was written. */
+   if (!(nl = (char*)memchr(buf, '\n', (size_t)sz)))
+   {
+      free(buf);
+      return NULL;
+   }
+   if ((long long)time(NULL) - strtoll((const char*)buf, NULL, 10)
+         >= (long long)minutes * 60)
+   {
+      free(buf); /* expired */
+      return NULL;
+   }
+   bodylen = (size_t)sz - (size_t)((nl + 1) - (char*)buf);
+   if (!(body = (char*)malloc(bodylen + 1)))
+   {
+      free(buf);
+      return NULL;
+   }
+   memcpy(body, nl + 1, bodylen);
+   body[bodylen] = '\0';
+   free(buf);
+   if (out_len)
+      *out_len = bodylen;
+   return body;
+}
+
+void romm_cache_response_store(const char *key, const char *data, size_t len)
+{
+   settings_t *settings = config_get_ptr();
+   char        path[PATH_MAX_LENGTH];
+   char        hdr[32];
+   RFILE      *f;
+   if (!settings || !settings->bools.romm_response_cache_enable)
+      return;
+   if (!data || len == 0 || string_is_empty(key))
+      return;
+   /* romm_response_cache_path() creates the responses directory if needed. */
+   romm_response_cache_path(path, sizeof(path), key);
+   if (string_is_empty(path))
+      return;
+   if (!(f = filestream_open(path, RETRO_VFS_FILE_ACCESS_WRITE,
+               RETRO_VFS_FILE_ACCESS_HINT_NONE)))
+      return;
+   snprintf(hdr, sizeof(hdr), "%lld\n", (long long)time(NULL));
+   filestream_write(f, hdr, strlen(hdr));
+   filestream_write(f, data, len);
+   filestream_close(f);
+}

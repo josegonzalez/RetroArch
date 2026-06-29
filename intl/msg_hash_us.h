@@ -1159,6 +1159,54 @@ MSG_HASH(
    "How many games to fetch per request when browsing a large platform."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_RESPONSE_CACHE_ENABLE,
+   "Cache Server Responses"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_RESPONSE_CACHE_ENABLE,
+   "Reuse recently fetched platform, collection and game lists instead of downloading them again every time."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_RESPONSE_CACHE_MINUTES,
+   "Response Cache Duration"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM_RESPONSE_CACHE_MINUTES,
+   "How long a cached list stays valid before RetroArch fetches it again."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM,
+   "RomM"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_ROMM,
+   "Browse and play games from your RomM server."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_PLATFORMS,
+   "Platforms"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_COLLECTIONS,
+   "Collections"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_GAMES,
+   "Games"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_PLATFORM_ENTRY,
+   "Platform"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_COLLECTION_ENTRY,
+   "Collection"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_ROMM_GAME_ENTRY,
+   "Game"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ENABLE,
    "Enable Cloud Sync"
    )

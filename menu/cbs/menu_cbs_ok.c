@@ -25,6 +25,9 @@
 
 #ifdef HAVE_NETWORKING
 #include <net/net_http.h>
+#include "../../network/romm/romm_api.h"
+#include "../../network/romm/romm_browse.h"
+#include "../../network/romm/romm_cache.h"
 #endif
 
 #ifdef HAVE_CONFIG_H
@@ -1879,6 +1882,18 @@ int generic_action_ok_displaylist_push(
       case ACTION_OK_DL_CORE_DELETE_BACKUP_LIST:
          ACTION_OK_DL_LBL(action_ok_dl_to_enum(action_type), DISPLAYLIST_GENERIC);
          info_path          = label;
+         break;
+      case ACTION_OK_DL_ROMM_BROWSER:
+         ACTION_OK_DL_LBL(MENU_ENUM_LABEL_DEFERRED_ROMM_BROWSER, DISPLAYLIST_GENERIC);
+         break;
+      case ACTION_OK_DL_ROMM_PLATFORMS:
+         ACTION_OK_DL_LBL(MENU_ENUM_LABEL_DEFERRED_ROMM_PLATFORMS, DISPLAYLIST_GENERIC);
+         break;
+      case ACTION_OK_DL_ROMM_COLLECTIONS:
+         ACTION_OK_DL_LBL(MENU_ENUM_LABEL_DEFERRED_ROMM_COLLECTIONS, DISPLAYLIST_GENERIC);
+         break;
+      case ACTION_OK_DL_ROMM_GAMES:
+         ACTION_OK_DL_LBL(MENU_ENUM_LABEL_DEFERRED_ROMM_GAMES, DISPLAYLIST_GENERIC);
          break;
       case ACTION_OK_DL_CONTENT_SETTINGS:
          info.list          = MENU_LIST_GET_SELECTION(menu_list, 0);
@@ -6956,6 +6971,288 @@ static int action_ok_push_netplay_refresh_rooms(const char *path,
    return 0;
 }
 
+/* ============================ RomM browser ============================ */
+
+static void romm_platforms_cb(retro_task_t *task, void *task_data,
+      void *user_data, const char *err)
+{
+   http_transfer_data_t *data  = (http_transfer_data_t*)task_data;
+   romm_state_t         *st    = romm_state_get_ptr();
+   struct menu_state    *menu_st = menu_state_get_ptr();
+   unsigned token              = (unsigned)(uintptr_t)user_data;
+
+   if (token != st->request_token)
+      return; /* superseded by a newer fetch */
+
+   if (     err || !data || !data->data || !data->len
+         || data->status < 200 || data->status >= 300)
+   {
+      romm_state_free_platforms();
+      st->platform_status = ROMM_LOAD_ERROR;
+   }
+   else
+   {
+      romm_state_apply_platforms(data->data, data->len);
+      romm_cache_response_store("platforms", data->data, data->len);
+   }
+
+   menu_st->flags |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH
+                  |  MENU_ST_FLAG_PREVENT_POPULATE;
+}
+
+static void romm_collections_cb(retro_task_t *task, void *task_data,
+      void *user_data, const char *err)
+{
+   http_transfer_data_t *data  = (http_transfer_data_t*)task_data;
+   romm_state_t         *st    = romm_state_get_ptr();
+   struct menu_state    *menu_st = menu_state_get_ptr();
+   unsigned token              = (unsigned)(uintptr_t)user_data;
+
+   if (token != st->request_token)
+      return;
+
+   if (     err || !data || !data->data || !data->len
+         || data->status < 200 || data->status >= 300)
+   {
+      romm_state_free_collections();
+      st->collection_status = ROMM_LOAD_ERROR;
+   }
+   else
+   {
+      romm_state_apply_collections(data->data, data->len);
+      romm_cache_response_store("collections_regular", data->data, data->len);
+   }
+
+   menu_st->flags |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH
+                  |  MENU_ST_FLAG_PREVENT_POPULATE;
+}
+
+static void romm_roms_cb(retro_task_t *task, void *task_data,
+      void *user_data, const char *err)
+{
+   http_transfer_data_t *data  = (http_transfer_data_t*)task_data;
+   romm_state_t         *st    = romm_state_get_ptr();
+   struct menu_state    *menu_st = menu_state_get_ptr();
+   unsigned token              = (unsigned)(uintptr_t)user_data;
+
+   if (token != st->request_token)
+      return;
+
+   if (     err || !data || !data->data || !data->len
+         || data->status < 200 || data->status >= 300)
+   {
+      romm_state_free_roms();
+      st->rom_status = ROMM_LOAD_ERROR;
+   }
+   else
+   {
+      romm_state_apply_roms(data->data, data->len);
+      romm_cache_response_store(st->rom_container_key, data->data, data->len);
+   }
+
+   menu_st->flags |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH
+                  |  MENU_ST_FLAG_PREVENT_POPULATE;
+}
+
+/* Main Menu "RomM" -> Platforms / Collections chooser. */
+STATIC_DEFAULT_ACTION_OK_FUNC(action_ok_romm, ACTION_OK_DL_ROMM_BROWSER)
+
+static int action_ok_romm_platforms_list(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char url[2048];
+   char headers[1024];
+   romm_state_t *st = romm_state_get_ptr();
+   unsigned token;
+
+   /* Reuse the cached platform list while it is still fresh. */
+   if (romm_state_cache_fresh(st->platform_fetched_usec, st->platform_status))
+      return generic_action_ok_displaylist_push(path, NULL, label, type,
+            idx, entry_idx, ACTION_OK_DL_ROMM_PLATFORMS);
+
+   /* Otherwise reuse a fresh on-disk cached response (survives restarts). */
+   {
+      size_t dlen = 0;
+      char  *disk = romm_cache_response_load("platforms", &dlen);
+      if (disk)
+      {
+         romm_state_apply_platforms(disk, dlen);
+         free(disk);
+         return generic_action_ok_displaylist_push(path, NULL, label, type,
+               idx, entry_idx, ACTION_OK_DL_ROMM_PLATFORMS);
+      }
+   }
+
+   if (!romm_is_configured())
+   {
+      st->platform_status = ROMM_LOAD_ERROR;
+      return generic_action_ok_displaylist_push(path, NULL, label, type,
+            idx, entry_idx, ACTION_OK_DL_ROMM_PLATFORMS);
+   }
+
+   token = romm_state_new_token();
+   romm_state_free_platforms();
+   st->platform_status = ROMM_LOAD_LOADING;
+
+   romm_url_platforms(url, sizeof(url));
+   romm_build_auth_headers(headers, sizeof(headers));
+   task_push_http_transfer_with_headers(url, true, NULL, headers,
+         romm_platforms_cb, (void*)(uintptr_t)token);
+
+   return generic_action_ok_displaylist_push(path, NULL, label, type,
+         idx, entry_idx, ACTION_OK_DL_ROMM_PLATFORMS);
+}
+
+static int action_ok_romm_collections_list(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char url[2048];
+   char headers[1024];
+   romm_state_t *st = romm_state_get_ptr();
+   unsigned token;
+
+   /* Reuse the cached collection list while it is still fresh. */
+   if (romm_state_cache_fresh(st->collection_fetched_usec, st->collection_status))
+      return generic_action_ok_displaylist_push(path, NULL, label, type,
+            idx, entry_idx, ACTION_OK_DL_ROMM_COLLECTIONS);
+
+   /* Otherwise reuse a fresh on-disk cached response (survives restarts). */
+   {
+      size_t dlen = 0;
+      char  *disk = romm_cache_response_load("collections_regular", &dlen);
+      if (disk)
+      {
+         romm_state_apply_collections(disk, dlen);
+         free(disk);
+         return generic_action_ok_displaylist_push(path, NULL, label, type,
+               idx, entry_idx, ACTION_OK_DL_ROMM_COLLECTIONS);
+      }
+   }
+
+   if (!romm_is_configured())
+   {
+      st->collection_status = ROMM_LOAD_ERROR;
+      return generic_action_ok_displaylist_push(path, NULL, label, type,
+            idx, entry_idx, ACTION_OK_DL_ROMM_COLLECTIONS);
+   }
+
+   token = romm_state_new_token();
+   romm_state_free_collections();
+   st->collection_status = ROMM_LOAD_LOADING;
+
+   romm_url_collections(url, sizeof(url), ROMM_COLLECTION_REGULAR);
+   romm_build_auth_headers(headers, sizeof(headers));
+   task_push_http_transfer_with_headers(url, true, NULL, headers,
+         romm_collections_cb, (void*)(uintptr_t)token);
+
+   return generic_action_ok_displaylist_push(path, NULL, label, type,
+         idx, entry_idx, ACTION_OK_DL_ROMM_COLLECTIONS);
+}
+
+/* Fetch a container's roms (page 0) and open the games view. key uniquely
+ * identifies the platform/collection so a cached games list is only reused
+ * for the same container. */
+static int romm_open_games(const char *path, const char *label,
+      unsigned type, size_t idx, size_t entry_idx, const char *url,
+      const char *name, const char *key)
+{
+   char headers[1024];
+   romm_state_t *st = romm_state_get_ptr();
+   unsigned token;
+
+   /* Reuse the cached games list if still fresh and for this same container. */
+   if (     romm_state_cache_fresh(st->rom_fetched_usec, st->rom_status)
+         && string_is_equal(st->rom_container_key, key ? key : ""))
+   {
+      strlcpy(st->container_name, name ? name : "",
+            sizeof(st->container_name));
+      return generic_action_ok_displaylist_push(path, NULL, label, type,
+            idx, entry_idx, ACTION_OK_DL_ROMM_GAMES);
+   }
+
+   /* Otherwise reuse a fresh on-disk cached response for this container. */
+   {
+      size_t dlen = 0;
+      char  *disk = romm_cache_response_load(key, &dlen);
+      if (disk)
+      {
+         strlcpy(st->container_name, name ? name : "",
+               sizeof(st->container_name));
+         strlcpy(st->rom_container_key, key ? key : "",
+               sizeof(st->rom_container_key));
+         romm_state_apply_roms(disk, dlen);
+         free(disk);
+         return generic_action_ok_displaylist_push(path, NULL, label, type,
+               idx, entry_idx, ACTION_OK_DL_ROMM_GAMES);
+      }
+   }
+
+   token = romm_state_new_token();
+   romm_state_free_roms();
+   st->rom_status = ROMM_LOAD_LOADING;
+   strlcpy(st->container_name, name ? name : "", sizeof(st->container_name));
+   strlcpy(st->rom_container_key, key ? key : "",
+         sizeof(st->rom_container_key));
+
+   romm_build_auth_headers(headers, sizeof(headers));
+   task_push_http_transfer_with_headers(url, true, NULL, headers,
+         romm_roms_cb, (void*)(uintptr_t)token);
+
+   return generic_action_ok_displaylist_push(path, NULL, label, type,
+         idx, entry_idx, ACTION_OK_DL_ROMM_GAMES);
+}
+
+static int action_ok_romm_platform(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char url[2048];
+   char key[64];
+   romm_state_t *st       = romm_state_get_ptr();
+   settings_t   *settings = config_get_ptr();
+   unsigned pidx          = type - MENU_SETTINGS_ROMM_PLATFORMS_START;
+   const romm_platform_t *p;
+
+   if (pidx >= (unsigned)st->platform_count)
+      return -1;
+   p = &st->platforms[pidx];
+
+   romm_url_roms_by_platform(url, sizeof(url), p->id, NULL,
+         settings->uints.romm_page_size, 0);
+   snprintf(key, sizeof(key), "p:%d", p->id);
+   return romm_open_games(path, label, type, idx, entry_idx, url,
+         p->name, key);
+}
+
+static int action_ok_romm_collection(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   char url[2048];
+   char key[200];
+   romm_state_t *st       = romm_state_get_ptr();
+   settings_t   *settings = config_get_ptr();
+   unsigned cidx          = type - MENU_SETTINGS_ROMM_COLLECTIONS_START;
+   const romm_collection_t *c;
+
+   if (cidx >= (unsigned)st->collection_count)
+      return -1;
+   c = &st->collections[cidx];
+
+   romm_url_roms_by_collection(url, sizeof(url), c->kind, c->id, NULL,
+         settings->uints.romm_page_size, 0);
+   snprintf(key, sizeof(key), "c:%d:%s", (int)c->kind, c->id);
+   return romm_open_games(path, label, type, idx, entry_idx, url,
+         c->name, key);
+}
+
+static int action_ok_romm_game(const char *path,
+      const char *label, unsigned type, size_t idx, size_t entry_idx)
+{
+   const char *_msg = "Downloading and launching RomM games is coming soon.";
+   runloop_msg_queue_push(_msg, strlen(_msg), 1, 150, true, NULL,
+         MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+   return 0;
+}
+
 #ifdef HAVE_NETPLAYDISCOVERY
 static void netplay_refresh_lan_cb(const void *data)
 {
@@ -9522,6 +9819,12 @@ static int menu_cbs_init_bind_ok_compare_label(menu_file_list_cbs_t *cbs,
          {MENU_ENUM_LABEL_WIFI_DISCONNECT,                     action_ok_wifi_disconnect},
 #endif
          {MENU_ENUM_LABEL_CONNECT_NETPLAY_ROOM,                action_ok_netplay_connect_room},
+         {MENU_ENUM_LABEL_ROMM,                                action_ok_romm},
+         {MENU_ENUM_LABEL_ROMM_PLATFORMS,                      action_ok_romm_platforms_list},
+         {MENU_ENUM_LABEL_ROMM_COLLECTIONS,                    action_ok_romm_collections_list},
+         {MENU_ENUM_LABEL_ROMM_PLATFORM_ENTRY,                 action_ok_romm_platform},
+         {MENU_ENUM_LABEL_ROMM_COLLECTION_ENTRY,               action_ok_romm_collection},
+         {MENU_ENUM_LABEL_ROMM_GAME_ENTRY,                     action_ok_romm_game},
 #endif
          {MENU_ENUM_LABEL_NETWORK_HOSTING_SETTINGS,            action_ok_network_hosting_list},
          {MENU_ENUM_LABEL_NETPLAY_KICK,                        action_ok_netplay_kick_list},

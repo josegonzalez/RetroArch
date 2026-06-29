@@ -84,6 +84,9 @@ RETRO_BEGIN_DECLS
 #define MENU_SETTINGS_CORE_OPTION_START          0x10000
 #define MENU_SETTINGS_CHEEVOS_START              0x40000
 #define MENU_SETTINGS_NETPLAY_ROOMS_START        0x80000
+#define MENU_SETTINGS_ROMM_PLATFORMS_START       0x100000
+#define MENU_SETTINGS_ROMM_COLLECTIONS_START     0x140000
+#define MENU_SETTINGS_ROMM_GAMES_START           0x180000
 
 /* "Normalize" non-alphabetical entries so they
  * are lumped together for purposes of jumping. */

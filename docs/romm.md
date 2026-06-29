@@ -54,6 +54,10 @@ Downloaded games are stored in a local cache so they play instantly next time.
 - **Cache Size Limit (MB)** - the cap used by **Limit Size (LRU)** mode.
 - **Game List Page Size** - how many games RetroArch fetches per request when browsing a large platform
   (default 1000; RomM allows up to 10000).
+- **Cache Server Responses** - reuse recently fetched platform, collection, and game lists instead of
+  downloading them again every time you browse (on by default).
+- **Response Cache Duration** - how long a cached list stays valid before RetroArch fetches it again
+  (default 6 hours). Only used when **Cache Server Responses** is on.
 
 ## References
 

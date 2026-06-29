@@ -629,6 +629,10 @@ DEFAULT_TITLE_MACRO(action_get_eject_disc,                      MENU_ENUM_LABEL_
 #endif
 DEFAULT_TITLE_MACRO(action_get_saving_settings_list,            MENU_ENUM_LABEL_VALUE_SAVING_SETTINGS)
 DEFAULT_TITLE_MACRO(action_get_cloud_sync_settings_list,        MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SETTINGS)
+DEFAULT_TITLE_MACRO(action_get_romm_browser_list,               MENU_ENUM_LABEL_VALUE_ROMM)
+DEFAULT_TITLE_MACRO(action_get_romm_platforms_list,             MENU_ENUM_LABEL_VALUE_ROMM_PLATFORMS)
+DEFAULT_TITLE_MACRO(action_get_romm_collections_list,           MENU_ENUM_LABEL_VALUE_ROMM_COLLECTIONS)
+DEFAULT_TITLE_MACRO(action_get_romm_games_list,                 MENU_ENUM_LABEL_VALUE_ROMM_GAMES)
 DEFAULT_TITLE_MACRO(action_get_logging_settings_list,           MENU_ENUM_LABEL_VALUE_LOGGING_SETTINGS)
 DEFAULT_TITLE_MACRO(action_get_frame_throttle_settings_list,    MENU_ENUM_LABEL_VALUE_FRAME_THROTTLE_SETTINGS)
 DEFAULT_TITLE_MACRO(action_get_frame_time_counter_settings_list, MENU_ENUM_LABEL_VALUE_FRAME_TIME_COUNTER_SETTINGS)
@@ -987,6 +991,10 @@ static int menu_cbs_init_bind_title_compare_label(menu_file_list_cbs_t *cbs,
       {MENU_ENUM_LABEL_DEFERRED_CONFIGURATION_SETTINGS_LIST,          action_get_configuration_settings_list },
       {MENU_ENUM_LABEL_DEFERRED_SAVING_SETTINGS_LIST,                 action_get_saving_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_CLOUD_SYNC_SETTINGS_LIST,             action_get_cloud_sync_settings_list},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_BROWSER,                         action_get_romm_browser_list},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_PLATFORMS,                       action_get_romm_platforms_list},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_COLLECTIONS,                     action_get_romm_collections_list},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_GAMES,                           action_get_romm_games_list},
       {MENU_ENUM_LABEL_DEFERRED_LOGGING_SETTINGS_LIST,                action_get_logging_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_FRAME_TIME_COUNTER_SETTINGS_LIST,     action_get_frame_time_counter_settings_list },
       {MENU_ENUM_LABEL_DEFERRED_FRAME_THROTTLE_SETTINGS_LIST,         action_get_frame_throttle_settings_list},

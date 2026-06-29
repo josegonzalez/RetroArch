@@ -5628,6 +5628,22 @@ static size_t setting_get_string_representation_uint_romm_cache_mode(
    return 0;
 }
 
+static size_t setting_get_string_representation_uint_romm_response_cache_minutes(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   unsigned m;
+   if (!setting)
+      return 0;
+   m = *setting->value.target.unsigned_integer;
+   if (m >= 60)
+   {
+      if (m % 60 == 0)
+         return snprintf(s, len, "%u h", m / 60);
+      return snprintf(s, len, "%u h %u min", m / 60, m % 60);
+   }
+   return snprintf(s, len, "%u min", m);
+}
+
 static void romm_settings_msg(const char *msg)
 {
    runloop_msg_queue_push(msg, strlen(msg), 1, 180, true, NULL,
@@ -12794,6 +12810,37 @@ static bool setting_append_list(
                general_read_handler);
          (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
          menu_settings_list_current_add_range(list, list_info, 50, 10000, 50, true, true);
+
+         CONFIG_BOOL(
+               list, list_info,
+               &settings->bools.romm_response_cache_enable,
+               MENU_ENUM_LABEL_ROMM_RESPONSE_CACHE_ENABLE,
+               MENU_ENUM_LABEL_VALUE_ROMM_RESPONSE_CACHE_ENABLE,
+               true,
+               MENU_ENUM_LABEL_VALUE_OFF,
+               MENU_ENUM_LABEL_VALUE_ON,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler,
+               SD_FLAG_NONE);
+
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.romm_response_cache_minutes,
+               MENU_ENUM_LABEL_ROMM_RESPONSE_CACHE_MINUTES,
+               MENU_ENUM_LABEL_VALUE_ROMM_RESPONSE_CACHE_MINUTES,
+               360,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         (*list)[list_info->index - 1].get_string_representation =
+            &setting_get_string_representation_uint_romm_response_cache_minutes;
+         menu_settings_list_current_add_range(list, list_info, 1, 1440, 1, true, true);
 #endif
          END_SUB_GROUP(list, list_info, parent_group);
          END_GROUP(list, list_info, parent_group);

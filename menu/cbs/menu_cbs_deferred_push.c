@@ -171,6 +171,10 @@ GENERIC_DEFERRED_PUSH(deferred_push_crt_switchres_settings_list,    DISPLAYLIST_
 GENERIC_DEFERRED_PUSH(deferred_push_configuration_settings_list,    DISPLAYLIST_CONFIGURATION_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_saving_settings_list,           DISPLAYLIST_SAVING_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_cloud_sync_settings_list,       DISPLAYLIST_CLOUD_SYNC_SETTINGS_LIST)
+GENERIC_DEFERRED_PUSH(deferred_push_romm_browser,                   DISPLAYLIST_ROMM_BROWSER)
+GENERIC_DEFERRED_PUSH(deferred_push_romm_platforms,                 DISPLAYLIST_ROMM_PLATFORMS)
+GENERIC_DEFERRED_PUSH(deferred_push_romm_collections,               DISPLAYLIST_ROMM_COLLECTIONS)
+GENERIC_DEFERRED_PUSH(deferred_push_romm_games,                     DISPLAYLIST_ROMM_GAMES)
 GENERIC_DEFERRED_PUSH(deferred_push_mixer_stream_settings_list,     DISPLAYLIST_MIXER_STREAM_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_logging_settings_list,          DISPLAYLIST_LOGGING_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_frame_throttle_settings_list,   DISPLAYLIST_FRAME_THROTTLE_SETTINGS_LIST)
@@ -571,6 +575,10 @@ static int menu_cbs_init_bind_deferred_push_compare_label(
       {MENU_ENUM_LABEL_DEFERRED_CONFIGURATION_SETTINGS_LIST, deferred_push_configuration_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_SAVING_SETTINGS_LIST, deferred_push_saving_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_CLOUD_SYNC_SETTINGS_LIST, deferred_push_cloud_sync_settings_list},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_BROWSER, deferred_push_romm_browser},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_PLATFORMS, deferred_push_romm_platforms},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_COLLECTIONS, deferred_push_romm_collections},
+      {MENU_ENUM_LABEL_DEFERRED_ROMM_GAMES, deferred_push_romm_games},
       {MENU_ENUM_LABEL_DEFERRED_MIXER_STREAM_SETTINGS_LIST, deferred_push_mixer_stream_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_LOGGING_SETTINGS_LIST, deferred_push_logging_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_FRAME_THROTTLE_SETTINGS_LIST, deferred_push_frame_throttle_settings_list},
