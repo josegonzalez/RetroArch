@@ -7244,12 +7244,169 @@ static int action_ok_romm_collection(const char *path,
          c->name, key);
 }
 
+/* Load a cached RomM game through RetroArch's native content loader: when a
+ * single core supports the content it launches directly, otherwise the standard
+ * core picker is shown. No RomM-specific core handling here - that is reserved
+ * for the streamlined driver. */
+static int romm_menu_load_content(const char *content_path)
+{
+   char new_core_path[PATH_MAX_LENGTH];
+   menu_content_ctx_defer_info_t def_info;
+   core_info_list_t  *list    = NULL;
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_handle_t     *menu    = menu_st->driver_data;
+
+   if (!menu || string_is_empty(content_path))
+      return -1;
+
+   core_info_get_list(&list);
+
+   /* find_first_core only joins dir+path into def_info.s when dir is set, so
+    * pre-fill s with the absolute content path and leave dir empty. */
+   strlcpy(menu->deferred_path, content_path, sizeof(menu->deferred_path));
+   strlcpy(menu->detect_content_path, content_path,
+         sizeof(menu->detect_content_path));
+
+   def_info.data       = list;
+   def_info.dir        = "";
+   def_info.path       = content_path;
+   def_info.menu_label = "";
+   def_info.s          = menu->deferred_path;
+   def_info.len        = sizeof(menu->deferred_path);
+   new_core_path[0]    = '\0';
+
+   if (menu_content_find_first_core(&def_info, false, new_core_path,
+            sizeof(new_core_path)))
+   {
+      content_ctx_info_t content_info;
+      content_info.argc        = 0;
+      content_info.argv        = NULL;
+      content_info.args        = NULL;
+      content_info.environ_get = NULL;
+      if (!task_push_load_content_with_new_core_from_menu(new_core_path,
+               def_info.s, &content_info, CORE_TYPE_PLAIN, NULL, NULL))
+         return -1;
+      menu_driver_set_last_start_content(menu_st, def_info.s);
+      return 0;
+   }
+
+   /* Zero or multiple matching cores: show RetroArch's core picker. */
+   return generic_action_ok_displaylist_push(content_path, NULL, "",
+         0, menu_st->selection_ptr, 0, ACTION_OK_DL_DEFERRED_CORE_LIST);
+}
+
+typedef struct
+{
+   char content_path[PATH_MAX_LENGTH];
+   char platform_slug[128];
+   int  rom_id;
+   int  platform_id;
+} romm_download_ctx_t;
+
+static void romm_download_cb(retro_task_t *task, void *task_data,
+      void *user_data, const char *err)
+{
+   http_transfer_data_t *data = (http_transfer_data_t*)task_data;
+   romm_download_ctx_t  *ctx  = (romm_download_ctx_t*)user_data;
+   char        dir[PATH_MAX_LENGTH];
+   const char *_msg;
+
+   if (!ctx)
+      return;
+
+   if (     err || !data || !data->data || !data->len
+         || data->status < 200 || data->status >= 300)
+   {
+      _msg = "RomM download failed.";
+      runloop_msg_queue_push(_msg, strlen(_msg), 1, 150, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+      free(ctx);
+      return;
+   }
+
+   /* Ensure the platform cache directory exists. romm_cache_platform_dir
+    * re-creates the cache base and returns a slash-free path so path_mkdir
+    * builds the whole chain. */
+   romm_cache_platform_dir(dir, sizeof(dir), ctx->platform_slug);
+   if (!string_is_empty(dir) && !path_is_directory(dir))
+      path_mkdir(dir);
+
+   /* Make room in LRU mode, then write the rom and its sidecar. */
+   romm_cache_evict_if_needed((int64_t)data->len);
+   if (!filestream_write_file(ctx->content_path, data->data, data->len))
+   {
+      char errmsg[256];
+      RARCH_ERR("[RomM] Failed to write \"%s\" (dir \"%s\" exists=%d).\n",
+            ctx->content_path, dir, (int)path_is_directory(dir));
+      snprintf(errmsg, sizeof(errmsg),
+            "Could not write to RomM cache: %s", ctx->content_path);
+      runloop_msg_queue_push(errmsg, strlen(errmsg), 1, 220, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+      free(ctx);
+      return;
+   }
+   romm_cache_write_sidecar(ctx->content_path, ctx->rom_id, ctx->platform_id);
+
+   romm_menu_load_content(ctx->content_path);
+   free(ctx);
+}
+
 static int action_ok_romm_game(const char *path,
       const char *label, unsigned type, size_t idx, size_t entry_idx)
 {
-   const char *_msg = "Downloading and launching RomM games is coming soon.";
+   char url[2048];
+   char headers[1024];
+   char content_path[PATH_MAX_LENGTH];
+   romm_state_t        *st = romm_state_get_ptr();
+   romm_download_ctx_t *ctx;
+   const romm_rom_t    *r;
+   unsigned gidx           = type - MENU_SETTINGS_ROMM_GAMES_START;
+   const char *_msg;
+
+   if (gidx >= (unsigned)st->rom_count)
+      return -1;
+   r = &st->roms[gidx];
+
+   romm_cache_rom_path(content_path, sizeof(content_path),
+         r->platform_slug, r->fs_name);
+   if (string_is_empty(content_path))
+      return -1;
+
+   /* Already downloaded: launch from cache. */
+   if (path_is_valid(content_path))
+   {
+      romm_cache_touch(content_path);
+      return romm_menu_load_content(content_path);
+   }
+
+   /* Multi-file roms (.m3u synthesis) are handled in a later change. */
+   if (r->has_multiple_files)
+   {
+      _msg = "Multi-file RomM games are not supported yet.";
+      runloop_msg_queue_push(_msg, strlen(_msg), 1, 150, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+      return 0;
+   }
+
+   if (!romm_is_configured())
+      return -1;
+
+   if (!(ctx = (romm_download_ctx_t*)calloc(1, sizeof(*ctx))))
+      return -1;
+   strlcpy(ctx->content_path, content_path, sizeof(ctx->content_path));
+   strlcpy(ctx->platform_slug, r->platform_slug, sizeof(ctx->platform_slug));
+   ctx->rom_id      = r->id;
+   ctx->platform_id = r->platform_id;
+
+   romm_url_rom_content(url, sizeof(url), r->id, r->fs_name);
+   romm_build_auth_headers(headers, sizeof(headers));
+
+   _msg = "Downloading from RomM...";
    runloop_msg_queue_push(_msg, strlen(_msg), 1, 150, true, NULL,
          MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+
+   task_push_http_transfer_with_headers(url, false, NULL, headers,
+         romm_download_cb, ctx);
    return 0;
 }
 

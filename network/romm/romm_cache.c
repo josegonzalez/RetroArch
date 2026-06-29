@@ -25,24 +25,37 @@
 
 #include "romm_cache.h"
 #include "../../configuration.h"
+#include "../../paths.h"
 
 bool romm_cache_dir(char *s, size_t len)
 {
    settings_t *settings = config_get_ptr();
+   const char *base     = NULL;
    if (!s || len == 0 || !settings)
       return false;
-   if (!string_is_empty(settings->paths.romm_cache_dir))
+
+   /* Explicit user directory, ignoring the "default" sentinel RetroArch
+    * stores for an unset directory setting (which is a relative, unwritable
+    * path if used verbatim). */
+   if (    !string_is_empty(settings->paths.romm_cache_dir)
+        && !string_is_equal(settings->paths.romm_cache_dir, "default"))
       strlcpy(s, settings->paths.romm_cache_dir, len);
    else
    {
-      if (string_is_empty(settings->paths.directory_core_assets))
+      /* Default to a "romm" folder under a writable base: the core assets
+       * directory when set, else the savefile directory, which is always a
+       * resolved, writable path. */
+      base = settings->paths.directory_core_assets;
+      if (string_is_empty(base) || string_is_equal(base, "default"))
+         base = dir_get_ptr(RARCH_DIR_SAVEFILE);
+      if (string_is_empty(base))
       {
          s[0] = '\0';
          return false;
       }
-      fill_pathname_join_special(s,
-            settings->paths.directory_core_assets, "romm", len);
+      fill_pathname_join_special(s, base, "romm", len);
    }
+
    if (!path_is_directory(s))
       path_mkdir(s);
    return true;
