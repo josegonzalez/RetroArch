@@ -3881,6 +3881,13 @@ bool command_event(enum event_command cmd, void *data)
             if (settings->bools.cloud_sync_sync_roms
                   && settings->uints.cloud_sync_roms_sync_mode == CLOUD_SYNC_ROMS_MODE_AUTOMATIC)
                task_push_cloud_sync_roms();
+#ifdef HAVE_NETWORKING
+            /* Sync the just-played RomM game's saves/states (no-op unless the
+             * unloaded content came from RomM). */
+            if (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC
+                  || settings->bools.cloud_sync_sync_per_content)
+               task_push_romm_sync(0 /* ROMM_SYNC_BIDIRECTIONAL */);
+#endif
 #endif
          }
 
@@ -4846,6 +4853,9 @@ bool command_event(enum event_command cmd, void *data)
 #ifdef HAVE_CLOUDSYNC
       case CMD_EVENT_CLOUD_SYNC:
          task_push_cloud_sync();
+#ifdef HAVE_NETWORKING
+         task_push_romm_sync(0 /* ROMM_SYNC_BIDIRECTIONAL */);
+#endif
          break;
       case CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_LOCAL:
          task_push_cloud_sync_resolve_keep_local();
@@ -6356,6 +6366,12 @@ int rarch_main(int argc, char *argv[], void *data)
          && (settings->uints.cloud_sync_roms_sync_mode == CLOUD_SYNC_ROMS_MODE_AUTOMATIC
              || settings->uints.cloud_sync_roms_sync_mode == CLOUD_SYNC_ROMS_MODE_ON_STARTUP))
       task_push_cloud_sync_roms();
+#ifdef HAVE_NETWORKING
+   /* Reconcile every cached RomM rom at startup (mostly pulling other devices'
+    * changes). No-op unless RomM is configured. */
+   if (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC)
+      task_push_romm_sync_all_cached(0 /* ROMM_SYNC_BIDIRECTIONAL */);
+#endif
 #endif
 #ifdef HAVE_LAKKA
    sd_notify(0, "READY=1");

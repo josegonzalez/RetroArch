@@ -1295,6 +1295,7 @@ NETPLAY
 #include "../network/romm/romm_api.c"
 #include "../network/romm/romm_cache.c"
 #include "../network/romm/romm_browse.c"
+#include "../tasks/task_romm_sync.c"
 #include "../tasks/task_netplay_lan_scan.c"
 #include "../tasks/task_netplay_nat_traversal.c"
 #ifdef HAVE_BLUETOOTH

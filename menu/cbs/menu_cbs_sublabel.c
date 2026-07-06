@@ -262,6 +262,7 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_settings_list,      MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_enable,             MENU_ENUM_SUBLABEL_CLOUD_SYNC_ENABLE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_mode,          MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_MODE)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_destructive,        MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_per_content,    MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_PER_CONTENT)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_saves,         MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_SAVES)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_configs,       MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_CONFIGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_thumbs,        MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_THUMBS)
@@ -5318,6 +5319,9 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_CLOUD_SYNC_DESTRUCTIVE:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_destructive);
+            break;
+         case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_PER_CONTENT:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_sync_per_content);
             break;
          case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SAVES:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_sync_saves);

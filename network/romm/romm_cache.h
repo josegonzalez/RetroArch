@@ -55,6 +55,11 @@ void romm_cache_remove(const char *content_path);
  * incoming_bytes fits under the configured cap. No-op in other modes. */
 void romm_cache_evict_if_needed(int64_t incoming_bytes);
 
+/* Enumerate every cached RomM content file (those carrying a .romm sidecar).
+ * Returns a newly-allocated string_list of content paths (or NULL); the caller
+ * frees it with string_list_free(). Used by the startup reconcile. */
+struct string_list *romm_cache_enumerate(void);
+
 /* Disk cache of raw API JSON responses, keyed by an arbitrary string (the key
  * is sanitized into a filename under <cache>/responses). Gated by the
  * romm_response_cache_* settings and a wall-clock TTL embedded in each file. */

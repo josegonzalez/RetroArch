@@ -100,6 +100,75 @@ size_t romm_parse_collections(const char *data, size_t len,
 size_t romm_parse_roms(const char *data, size_t len,
       romm_rom_t **out, size_t *total_out);
 
+/* ============================================================
+ * SAVE / STATE SYNC (negotiate engine)
+ * ============================================================ */
+
+enum romm_sync_direction
+{
+   ROMM_SYNC_BIDIRECTIONAL = 0,
+   ROMM_SYNC_PUSH,
+   ROMM_SYNC_PULL
+};
+
+enum romm_sync_op_type
+{
+   ROMM_OP_NOOP = 0,
+   ROMM_OP_UPLOAD,
+   ROMM_OP_DOWNLOAD,
+   ROMM_OP_CONFLICT
+};
+
+/* One operation returned by /api/sync/negotiate (SyncOperationSchema). The
+ * server sends no URLs - the client builds them from save_id / rom_id. */
+typedef struct
+{
+   enum romm_sync_op_type type;        /* from "action" */
+   int  save_id;                       /* download: GET /api/saves/{save_id}/content */
+   int  rom_id;
+   char file_name[256];
+   char slot[64];
+   char emulator[128];
+   char server_updated_at[64];         /* ISO 8601; resolves conflicts newest-wins */
+} romm_sync_op_t;
+
+/* One server-side save state (StateSchema / BaseAsset) from GET /api/states. */
+typedef struct
+{
+   int     id;
+   int64_t file_size_bytes;
+   char    file_name[256];
+   char    download_path[2048];        /* GET <base><download_path> to fetch */
+   char    updated_at[64];             /* ISO 8601 */
+} romm_state_asset_t;
+
+/* Sync endpoint URL builders. */
+void romm_url_devices(char *s, size_t len);
+void romm_url_negotiate(char *s, size_t len);
+void romm_url_sync_complete(char *s, size_t len, const char *session_id);
+/* GET /api/saves/{save_id}/content (download a save the negotiate op points to). */
+void romm_url_save_content(char *s, size_t len, int save_id);
+/* POST /api/saves upload URL with query params (rom_id/emulator/overwrite/session_id). */
+void romm_url_saves_upload(char *s, size_t len, int rom_id,
+      const char *emulator, const char *session_id);
+/* GET /api/states?rom_id= (list a rom's server states for the states diff). */
+void romm_url_states_by_rom(char *s, size_t len, int rom_id);
+/* POST /api/states upload URL with query params (rom_id/emulator). */
+void romm_url_states_upload(char *s, size_t len, int rom_id, const char *emulator);
+/* Join the configured base URL with a server-relative download_path. */
+void romm_url_from_download_path(char *s, size_t len, const char *download_path);
+
+/* Parse the device id (int or string) from a POST /api/devices response. */
+bool romm_parse_device_id(const char *data, size_t len, char *out, size_t out_len);
+
+/* Parse a negotiate response into session id + an operations array (caller
+ * frees *ops_out with free()). Returns the operation count. */
+size_t romm_parse_negotiate(const char *data, size_t len,
+      char *session_out, size_t session_len, romm_sync_op_t **ops_out);
+
+/* Parse a GET /api/states array into server-state assets (caller frees *out). */
+size_t romm_parse_states(const char *data, size_t len, romm_state_asset_t **out);
+
 RETRO_END_DECLS
 
 #endif

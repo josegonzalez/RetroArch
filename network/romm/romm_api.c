@@ -541,3 +541,399 @@ size_t romm_parse_roms(const char *data, size_t len,
       *total_out = ctx.total ? ctx.total : ctx.count;
    return ctx.count;
 }
+
+/* ============================================================
+ * SAVE / STATE SYNC URLS + PARSERS
+ * ============================================================ */
+
+void romm_url_devices(char *s, size_t len)
+{
+   char base[NAME_MAX_LENGTH];
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   snprintf(s, len, "%s/api/devices", base);
+}
+
+void romm_url_negotiate(char *s, size_t len)
+{
+   char base[NAME_MAX_LENGTH];
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   snprintf(s, len, "%s/api/sync/negotiate", base);
+}
+
+void romm_url_sync_complete(char *s, size_t len, const char *session_id)
+{
+   char base[NAME_MAX_LENGTH];
+   char enc[256];
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   romm_url_encode(enc, sizeof(enc), session_id ? session_id : "");
+   snprintf(s, len, "%s/api/sync/sessions/%s/complete", base, enc);
+}
+
+void romm_url_save_content(char *s, size_t len, int save_id)
+{
+   char base[NAME_MAX_LENGTH];
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   snprintf(s, len, "%s/api/saves/%d/content", base, save_id);
+}
+
+void romm_url_saves_upload(char *s, size_t len, int rom_id,
+      const char *emulator, const char *session_id)
+{
+   char   base[NAME_MAX_LENGTH];
+   char   enc[256];
+   size_t l;
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   snprintf(s, len, "%s/api/saves?rom_id=%d&overwrite=true", base, rom_id);
+   if (!string_is_empty(emulator))
+   {
+      romm_url_encode(enc, sizeof(enc), emulator);
+      l = strlen(s);
+      snprintf(s + l, len - l, "&emulator=%s", enc);
+   }
+   if (!string_is_empty(session_id))
+   {
+      romm_url_encode(enc, sizeof(enc), session_id);
+      l = strlen(s);
+      snprintf(s + l, len - l, "&session_id=%s", enc);
+   }
+}
+
+void romm_url_states_by_rom(char *s, size_t len, int rom_id)
+{
+   char base[NAME_MAX_LENGTH];
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   snprintf(s, len, "%s/api/states?rom_id=%d", base, rom_id);
+}
+
+void romm_url_states_upload(char *s, size_t len, int rom_id, const char *emulator)
+{
+   char   base[NAME_MAX_LENGTH];
+   char   enc[256];
+   size_t l;
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      if (s && len) s[0] = '\0';
+      return;
+   }
+   snprintf(s, len, "%s/api/states?rom_id=%d", base, rom_id);
+   if (!string_is_empty(emulator))
+   {
+      romm_url_encode(enc, sizeof(enc), emulator);
+      l = strlen(s);
+      snprintf(s + l, len - l, "&emulator=%s", enc);
+   }
+}
+
+void romm_url_from_download_path(char *s, size_t len, const char *download_path)
+{
+   char base[NAME_MAX_LENGTH];
+   if (!s || len == 0)
+      return;
+   if (!string_is_empty(download_path) && strstr(download_path, "://"))
+   {
+      strlcpy(s, download_path, len);
+      return;
+   }
+   if (!romm_base_url(base, sizeof(base)))
+   {
+      s[0] = '\0';
+      return;
+   }
+   if (string_is_empty(download_path))
+      strlcpy(s, base, len);
+   else if (download_path[0] == '/')
+      snprintf(s, len, "%s%s", base, download_path);
+   else
+      snprintf(s, len, "%s/%s", base, download_path);
+}
+
+/* ---- device id: top-level object {id: ...} ---- */
+
+typedef struct
+{
+   char *out;
+   size_t out_len;
+   char  key[64];
+   int   depth;
+   bool  got;
+} devid_ctx_t;
+
+static bool devid_start_object(void *ctx) { ((devid_ctx_t*)ctx)->depth++; return true; }
+static bool devid_end_object(void *ctx)   { ((devid_ctx_t*)ctx)->depth--; return true; }
+static bool devid_member(void *ctx, const char *s, size_t len)
+{
+   devid_ctx_t *c = (devid_ctx_t*)ctx;
+   if (c->depth == 1)
+      strlcpy(c->key, s, sizeof(c->key));
+   return true;
+}
+static bool devid_string(void *ctx, const char *s, size_t len)
+{
+   devid_ctx_t *c = (devid_ctx_t*)ctx;
+   if (c->depth == 1 && string_is_equal(c->key, "id"))
+   {
+      strlcpy(c->out, s, c->out_len);
+      c->got = true;
+   }
+   return true;
+}
+static bool devid_number(void *ctx, const char *s, size_t len)
+{
+   return devid_string(ctx, s, len);
+}
+
+bool romm_parse_device_id(const char *data, size_t len, char *out, size_t out_len)
+{
+   devid_ctx_t ctx;
+   rjson_t    *json;
+   if (out && out_len)
+      out[0] = '\0';
+   if (!data || len == 0 || !out)
+      return false;
+   memset(&ctx, 0, sizeof(ctx));
+   ctx.out     = out;
+   ctx.out_len = out_len;
+   if (!(json = rjson_open_buffer(data, len)))
+      return false;
+   rjson_parse(json, &ctx,
+         devid_member, devid_string, devid_number,
+         devid_start_object, devid_end_object,
+         NULL, NULL, NULL, NULL);
+   rjson_free(json);
+   return ctx.got;
+}
+
+/* ---- negotiate: {session_id, operations:[{...}]}; ops at depth 3 ---- */
+
+typedef struct
+{
+   romm_sync_op_t *arr;
+   size_t          count;
+   size_t          cap;
+   romm_sync_op_t  cur;
+   char           *session;
+   size_t          session_len;
+   char            key[64];
+   int             depth;
+} nego_ctx_t;
+
+static bool nego_start_array(void *ctx) { ((nego_ctx_t*)ctx)->depth++; return true; }
+static bool nego_end_array(void *ctx)   { ((nego_ctx_t*)ctx)->depth--; return true; }
+
+static bool nego_start_object(void *ctx)
+{
+   nego_ctx_t *c = (nego_ctx_t*)ctx;
+   c->depth++;
+   if (c->depth == 3)
+   {
+      memset(&c->cur, 0, sizeof(c->cur));
+      c->cur.type = ROMM_OP_NOOP;
+   }
+   return true;
+}
+
+static bool nego_end_object(void *ctx)
+{
+   nego_ctx_t *c = (nego_ctx_t*)ctx;
+   if (c->depth == 3)
+   {
+      if (romm_grow((void**)&c->arr, &c->cap, c->count, sizeof(romm_sync_op_t)))
+         c->arr[c->count++] = c->cur;
+   }
+   c->depth--;
+   return true;
+}
+
+static bool nego_member(void *ctx, const char *s, size_t len)
+{
+   nego_ctx_t *c = (nego_ctx_t*)ctx;
+   if (c->depth == 1 || c->depth == 3)
+      strlcpy(c->key, s, sizeof(c->key));
+   return true;
+}
+
+static bool nego_string(void *ctx, const char *s, size_t len)
+{
+   nego_ctx_t *c = (nego_ctx_t*)ctx;
+   if (c->depth != 3)
+      return true;
+   if (string_is_equal(c->key, "action"))
+   {
+      if (string_is_equal(s, "upload"))        c->cur.type = ROMM_OP_UPLOAD;
+      else if (string_is_equal(s, "download")) c->cur.type = ROMM_OP_DOWNLOAD;
+      else if (string_is_equal(s, "conflict")) c->cur.type = ROMM_OP_CONFLICT;
+      else                                     c->cur.type = ROMM_OP_NOOP;
+   }
+   else if (string_is_equal(c->key, "file_name"))
+      strlcpy(c->cur.file_name, s, sizeof(c->cur.file_name));
+   else if (string_is_equal(c->key, "slot"))
+      strlcpy(c->cur.slot, s, sizeof(c->cur.slot));
+   else if (string_is_equal(c->key, "emulator"))
+      strlcpy(c->cur.emulator, s, sizeof(c->cur.emulator));
+   else if (string_is_equal(c->key, "server_updated_at"))
+      strlcpy(c->cur.server_updated_at, s, sizeof(c->cur.server_updated_at));
+   return true;
+}
+
+/* session_id and save_id/rom_id are JSON numbers, so they arrive here. */
+static bool nego_number(void *ctx, const char *s, size_t len)
+{
+   nego_ctx_t *c = (nego_ctx_t*)ctx;
+   if (c->depth == 1)
+   {
+      if (string_is_equal(c->key, "session_id") && c->session)
+         strlcpy(c->session, s, c->session_len);
+      return true;
+   }
+   if (c->depth != 3)
+      return true;
+   if (string_is_equal(c->key, "save_id"))
+      c->cur.save_id = (int)strtol(s, NULL, 10);
+   else if (string_is_equal(c->key, "rom_id"))
+      c->cur.rom_id = (int)strtol(s, NULL, 10);
+   return true;
+}
+
+size_t romm_parse_negotiate(const char *data, size_t len,
+      char *session_out, size_t session_len, romm_sync_op_t **ops_out)
+{
+   nego_ctx_t ctx;
+   rjson_t   *json;
+   if (ops_out)
+      *ops_out = NULL;
+   if (session_out && session_len)
+      session_out[0] = '\0';
+   if (!data || len == 0 || !ops_out)
+      return 0;
+   memset(&ctx, 0, sizeof(ctx));
+   ctx.session     = session_out;
+   ctx.session_len = session_len;
+   if (!(json = rjson_open_buffer(data, len)))
+      return 0;
+   rjson_parse(json, &ctx,
+         nego_member, nego_string, nego_number,
+         nego_start_object, nego_end_object,
+         nego_start_array, nego_end_array,
+         NULL, NULL);
+   rjson_free(json);
+   *ops_out = ctx.arr;
+   return ctx.count;
+}
+
+/* ---- states list: top-level array of StateSchema (rows at depth 2) ---- */
+
+typedef struct
+{
+   romm_state_asset_t *arr;
+   size_t              count;
+   size_t              cap;
+   romm_state_asset_t  cur;
+   char                key[64];
+   int                 depth;
+} state_ctx_t;
+
+static bool state_start_array(void *ctx) { ((state_ctx_t*)ctx)->depth++; return true; }
+static bool state_end_array(void *ctx)   { ((state_ctx_t*)ctx)->depth--; return true; }
+
+static bool state_start_object(void *ctx)
+{
+   state_ctx_t *c = (state_ctx_t*)ctx;
+   c->depth++;
+   if (c->depth == 2)
+   {
+      memset(&c->cur, 0, sizeof(c->cur));
+      c->key[0] = '\0';
+   }
+   return true;
+}
+
+static bool state_end_object(void *ctx)
+{
+   state_ctx_t *c = (state_ctx_t*)ctx;
+   if (c->depth == 2)
+   {
+      if (romm_grow((void**)&c->arr, &c->cap, c->count, sizeof(romm_state_asset_t)))
+         c->arr[c->count++] = c->cur;
+   }
+   c->depth--;
+   return true;
+}
+
+static bool state_member(void *ctx, const char *s, size_t len)
+{
+   state_ctx_t *c = (state_ctx_t*)ctx;
+   if (c->depth == 2)
+      strlcpy(c->key, s, sizeof(c->key));
+   return true;
+}
+
+static bool state_string(void *ctx, const char *s, size_t len)
+{
+   state_ctx_t *c = (state_ctx_t*)ctx;
+   if (c->depth != 2)
+      return true;
+   if (string_is_equal(c->key, "file_name"))
+      strlcpy(c->cur.file_name, s, sizeof(c->cur.file_name));
+   else if (string_is_equal(c->key, "download_path"))
+      strlcpy(c->cur.download_path, s, sizeof(c->cur.download_path));
+   else if (string_is_equal(c->key, "updated_at"))
+      strlcpy(c->cur.updated_at, s, sizeof(c->cur.updated_at));
+   return true;
+}
+
+static bool state_number(void *ctx, const char *s, size_t len)
+{
+   state_ctx_t *c = (state_ctx_t*)ctx;
+   if (c->depth != 2)
+      return true;
+   if (string_is_equal(c->key, "id"))
+      c->cur.id = (int)strtol(s, NULL, 10);
+   else if (string_is_equal(c->key, "file_size_bytes"))
+      c->cur.file_size_bytes = (int64_t)strtoll(s, NULL, 10);
+   return true;
+}
+
+size_t romm_parse_states(const char *data, size_t len, romm_state_asset_t **out)
+{
+   state_ctx_t ctx;
+   rjson_t    *json;
+   if (out)
+      *out = NULL;
+   if (!data || len == 0 || !out)
+      return 0;
+   memset(&ctx, 0, sizeof(ctx));
+   if (!(json = rjson_open_buffer(data, len)))
+      return 0;
+   rjson_parse(json, &ctx,
+         state_member, state_string, state_number,
+         state_start_object, state_end_object,
+         state_start_array, state_end_array,
+         NULL, NULL);
+   rjson_free(json);
+   *out = ctx.arr;
+   return ctx.count;
+}

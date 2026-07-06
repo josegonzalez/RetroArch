@@ -1219,6 +1219,10 @@ MSG_HASH(
    "Destructive Cloud Sync"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_PER_CONTENT,
+   "Sync Current Game On Load/Unload"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_SAVES,
    "Sync: Saves/States"
    )
@@ -1281,6 +1285,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "When disabled, files are moved to a backup folder before being overwritten or deleted."
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_PER_CONTENT,
+   "Also sync the current game's saves and states when it loads and unloads, in addition to the normal timing."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE,

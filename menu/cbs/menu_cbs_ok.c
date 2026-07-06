@@ -7295,6 +7295,43 @@ static int romm_menu_load_content(const char *content_path)
          0, menu_st->selection_ptr, 0, ACTION_OK_DL_DEFERRED_CORE_LIST);
 }
 
+/* Pull-before-load completion: launch the content once its saves/states have
+ * been pulled. user_data is the heap-allocated content path (freed here). */
+static void romm_launch_after_pull_cb(void *user_data)
+{
+   char *content_path = (char*)user_data;
+   if (!content_path)
+      return;
+   romm_menu_load_content(content_path);
+   free(content_path);
+}
+
+/* Launch a cached RomM game. When save sync runs on load (automatic mode or the
+ * per-content toggle), first pull the rom's saves/states and defer the launch
+ * to the pull's completion so freshly-pulled progress is used; otherwise launch
+ * directly. */
+static int romm_menu_launch(const char *content_path)
+{
+   settings_t *settings = config_get_ptr();
+   if (      settings && romm_is_configured()
+         && (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC
+             || settings->bools.cloud_sync_sync_per_content))
+   {
+      char *dup = (char*)malloc(PATH_MAX_LENGTH);
+      if (dup)
+      {
+         const char *_msg = "Syncing RomM saves...";
+         strlcpy(dup, content_path, PATH_MAX_LENGTH);
+         runloop_msg_queue_push(_msg, strlen(_msg), 1, 150, true, NULL,
+               MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+         task_push_romm_sync_path(dup, ROMM_SYNC_PULL,
+               romm_launch_after_pull_cb, dup);
+         return 0;
+      }
+   }
+   return romm_menu_load_content(content_path);
+}
+
 typedef struct
 {
    char content_path[PATH_MAX_LENGTH];
@@ -7347,7 +7384,7 @@ static void romm_download_cb(retro_task_t *task, void *task_data,
    }
    romm_cache_write_sidecar(ctx->content_path, ctx->rom_id, ctx->platform_id);
 
-   romm_menu_load_content(ctx->content_path);
+   romm_menu_launch(ctx->content_path);
    free(ctx);
 }
 
@@ -7376,7 +7413,7 @@ static int action_ok_romm_game(const char *path,
    if (path_is_valid(content_path))
    {
       romm_cache_touch(content_path);
-      return romm_menu_load_content(content_path);
+      return romm_menu_launch(content_path);
    }
 
    /* Multi-file roms (.m3u synthesis) are handled in a later change. */

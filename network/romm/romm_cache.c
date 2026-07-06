@@ -21,6 +21,7 @@
 #include <compat/strl.h>
 #include <file/file_path.h>
 #include <lists/dir_list.h>
+#include <lists/string_list.h>
 #include <streams/file_stream.h>
 
 #include "romm_cache.h"
@@ -293,6 +294,41 @@ void romm_cache_evict_if_needed(int64_t incoming_bytes)
    }
 
    free(ents);
+}
+
+struct string_list *romm_cache_enumerate(void)
+{
+   char base[DIR_MAX_LENGTH];
+   struct string_list *list, *out;
+   union string_list_elem_attr attr;
+   size_t i;
+
+   if (!romm_cache_dir(base, sizeof(base)))
+      return NULL;
+   /* Recursive listing; show_hidden=false excludes the .romm.*.txt sidecars. */
+   if (!(list = dir_list_new(base, NULL, false, false, true, true)))
+      return NULL;
+   if (!(out = string_list_new()))
+   {
+      string_list_free(list);
+      return NULL;
+   }
+
+   attr.i = 0;
+   for (i = 0; i < list->size; i++)
+   {
+      const char *p = list->elems[i].data;
+      int rid = 0;
+      if (!p || list->elems[i].attr.i == RARCH_DIRECTORY)
+         continue;
+      /* Only content that has a RomM sidecar (skips response-cache .json etc). */
+      if (!romm_cache_read_sidecar(p, &rid, NULL))
+         continue;
+      string_list_append(out, p, attr);
+   }
+
+   string_list_free(list);
+   return out;
 }
 
 /* ============================================================

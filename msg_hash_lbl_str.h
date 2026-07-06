@@ -887,6 +887,7 @@
 #define MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_MODE_AUTOMATIC_STR "cloud_sync_sync_mode_automatic"
 #define MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_MODE_MANUAL_STR "cloud_sync_sync_mode_manual"
 #define MENU_ENUM_LABEL_CLOUD_SYNC_DESTRUCTIVE_STR "cloud_sync_destructive"
+#define MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_PER_CONTENT_STR "cloud_sync_sync_per_content"
 #define MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SAVES_STR "cloud_sync_sync_saves"
 #define MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_CONFIGS_STR "cloud_sync_sync_configs"
 #define MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_THUMBS_STR "cloud_sync_sync_thumbs"

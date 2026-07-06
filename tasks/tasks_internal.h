@@ -300,6 +300,14 @@ extern const char* const input_builtin_autoconfs[];
 /* cloud sync tasks */
 void task_push_cloud_sync_update_driver(void);
 void task_push_cloud_sync(void);
+
+void task_push_romm_sync(int direction);
+/* Sync a specific cached content path (may not be loaded). on_done, when set,
+ * always fires on completion/failure (pull-before-load resumes the launch). */
+void task_push_romm_sync_path(const char *content_path, int direction,
+      void (*on_done)(void*), void *on_done_data);
+/* Reconcile every cached RomM rom (startup). */
+void task_push_romm_sync_all_cached(int direction);
 void task_push_cloud_sync_resolve_keep_local(void);
 void task_push_cloud_sync_resolve_keep_server(void);
 void task_push_cloud_sync_roms(void);
